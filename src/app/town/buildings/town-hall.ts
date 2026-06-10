@@ -1,6 +1,6 @@
 import type { AsciiBlock } from "../types";
 
-export const GuildHall: AsciiBlock = [
+export const TownHall: AsciiBlock = [
   "                 /\\                 ",
   "                /__\\                ",
   "              __|[]|__               ",
@@ -9,7 +9,7 @@ export const GuildHall: AsciiBlock = [
   "       /__\\ |  __  __  | /__\\      ",
   "       |[]|_| |  ||  | |_|[]|        ",
   "       |___|  |__||__|  |___|        ",
-  "      /      GUILD HOUSE     \\      ",
+  "      /                      \\      ",
   "     /________________________\\     ",
   "     | [=]  [=]        [=] [=] |     ",
   "     |    ____          ____   |     ",
