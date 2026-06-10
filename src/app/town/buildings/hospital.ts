@@ -1,7 +1,6 @@
 import type { AsciiBlock } from "../types";
 
 export const Hospital: AsciiBlock = [
-  "                                     ",
   "              ________               ",
   "            _|        |_             ",
   "           / |    +   | \\           ",

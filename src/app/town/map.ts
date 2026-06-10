@@ -1,8 +1,8 @@
 import { Bank } from "./buildings/bank";
 import { Cafe } from "./buildings/cafe";
-import { College } from "./buildings/college";
 import { Diner } from "./buildings/diner";
 import { Hospital } from "./buildings/hospital";
+import { LargeHouse } from "./buildings/large-house";
 import { TownHall } from "./buildings/town-hall";
 import type { AsciiBlock } from "./types";
 
@@ -19,7 +19,7 @@ type Placement = {
 const placements: Placement[] = [
   { block: TownHall, row: 2, col: 5 },
   { block: Hospital, row: 2, col: 27 },
-  { block: College, row: 2, col: 51 },
+  { block: LargeHouse, row: 2, col: 51 },
   { block: Bank, row: 13, col: 3 },
   { block: Cafe, row: 13, col: 43 },
   { block: Diner, row: 25, col: 52 },
