@@ -6,17 +6,17 @@ export default function Home() {
       <header className="mb-10 flex w-full flex-col items-center py-14 text-center">
         <h1 className="text-2xl font-normal text-white">bystanderland</h1>
         <p className="mt-4 max-w-md text-center text-sm text-white/70">
-          An ascii civilization living, aging, collapsing, and rebuilding inside
-          your browser.
+          An ascii civilization living, aging and rebuilding. Coming soon to
+          your browsers.
         </p>
       </header>
-      <div className="mx-auto grid w-fit grid-cols-2 gap-x-10 gap-y-12 md:grid-cols-4">
+      <div className="mx-auto grid w-fit grid-cols-1 gap-x-10 gap-y-12 sm:grid-cols-2 md:grid-cols-4">
         {BUILDINGS.map((building) => (
           <figure
             key={building.name}
-            className="grid min-h-[290px] w-[min(46vw,360px)] min-w-[280px] grid-rows-[1fr_auto] p-5"
+            className="flex w-[min(86vw,360px)] min-w-[280px] flex-col items-center p-5 sm:w-[min(46vw,360px)]"
           >
-            <pre className="self-start justify-self-center whitespace-pre font-mono text-[13px] leading-[1.45] text-white">
+            <pre className="whitespace-pre font-mono text-[13px] leading-[1.45] text-white">
               {building.block.length > 0
                 ? building.block.join("\n")
                 : "[ empty lot ]"}
