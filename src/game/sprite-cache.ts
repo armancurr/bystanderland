@@ -5,11 +5,7 @@ import {
   type BakedPlaceableSprite,
   type BakedPlaceableSprites,
 } from "./placeable-sprite-baker";
-import {
-  placeableSpriteKey,
-  type PlaceableAsset,
-  type TileRotation,
-} from "./placed-assets";
+import { placeableSpriteKey, type PlaceableAsset, type TileRotation } from "./placed-assets";
 
 // ---------------------------------------------------------------------------
 // On-demand placeable sprite resolution.

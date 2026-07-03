@@ -13,15 +13,22 @@ const OCCUPIED_LAND_COLOR = 0xffffff;
 const OCCUPIED_LAND_ALPHA = 0.55;
 const GRID_LINE_COLOR = 0x000000;
 const GRID_LINE_ALPHA = 0.28;
+const VALID_PREVIEW_COLOR = 0x6ee07f;
+const INVALID_PREVIEW_COLOR = 0xef4c42;
+const PREVIEW_FILL_ALPHA = 0.34;
+const PREVIEW_LINE_ALPHA = 0.9;
 const CAMERA_DRAG_THRESHOLD = 4;
 const LAND_DEPTH = -3000;
+const PLACEMENT_PREVIEW_DEPTH = -2500;
 const ASSET_DEPTH_BASE = -1000;
 
 export class IsometricMovementScene extends Phaser.Scene {
   private origin = new Phaser.Math.Vector2(0, 0);
   private placedTiles: PlacedTile[] = [];
   private landGraphics?: Phaser.GameObjects.Graphics;
+  private placementPreviewGraphics?: Phaser.GameObjects.Graphics;
   private placedAssetGroup?: Phaser.GameObjects.Group;
+  private hoveredCell: { col: number; row: number } | null = null;
   private activeDragPointerId: number | null = null;
   private isCameraDragging = false;
   private dragStart = new Phaser.Math.Vector2(0, 0);
@@ -69,6 +76,11 @@ export class IsometricMovementScene extends Phaser.Scene {
       return;
     }
     this.drawPlacedAssets();
+    this.refreshPlacementPreview();
+  }
+
+  refreshPlacementPreview() {
+    this.drawPlacementPreview(this.hoveredCell);
   }
 
   private registerPlaceableTextures(data: MovementSceneData | undefined) {
@@ -88,6 +100,7 @@ export class IsometricMovementScene extends Phaser.Scene {
     this.input.on("pointermove", this.handlePointerMove, this);
     this.input.on("pointerup", this.handlePointerUp, this);
     this.input.on("pointerupoutside", this.handlePointerUpOutside, this);
+    this.input.on("gameout", this.clearPlacementPreview, this);
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer) {
@@ -102,7 +115,12 @@ export class IsometricMovementScene extends Phaser.Scene {
   }
 
   private handlePointerMove(pointer: Phaser.Input.Pointer) {
-    if (this.activeDragPointerId !== pointer.id || !pointer.isDown) {
+    if (this.activeDragPointerId === null || !pointer.isDown) {
+      this.updatePlacementPreview(pointer);
+      return;
+    }
+
+    if (this.activeDragPointerId !== pointer.id) {
       return;
     }
 
@@ -119,6 +137,7 @@ export class IsometricMovementScene extends Phaser.Scene {
       }
 
       this.isCameraDragging = true;
+      this.clearPlacementPreview();
     }
 
     const deltaX = pointer.x - this.lastDragPointer.x;
@@ -138,6 +157,7 @@ export class IsometricMovementScene extends Phaser.Scene {
     this.isCameraDragging = false;
 
     if (wasDragging) {
+      this.updatePlacementPreview(pointer);
       return;
     }
 
@@ -174,6 +194,7 @@ export class IsometricMovementScene extends Phaser.Scene {
 
     this.activeDragPointerId = null;
     this.isCameraDragging = false;
+    this.clearPlacementPreview();
   }
 
   private screenToGrid(pointer: Phaser.Input.Pointer) {
@@ -310,6 +331,46 @@ export class IsometricMovementScene extends Phaser.Scene {
         graphics.strokePoints(this.cellCorners(col, row), true, true);
       }
     }
+  }
+
+  private updatePlacementPreview(pointer: Phaser.Input.Pointer) {
+    const cell = this.screenToGrid(pointer);
+    this.hoveredCell = cell;
+    this.drawPlacementPreview(cell);
+  }
+
+  private drawPlacementPreview(cell: { col: number; row: number } | null) {
+    const graphics =
+      this.placementPreviewGraphics ??
+      this.add.graphics().setDepth(PLACEMENT_PREVIEW_DEPTH);
+    this.placementPreviewGraphics = graphics;
+    graphics.clear();
+
+    const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
+    if (!data || !cell) {
+      return;
+    }
+
+    const preview = data.getPlacementPreview(cell.col, cell.row);
+    if (!preview) {
+      return;
+    }
+
+    const color = preview.isValid ? VALID_PREVIEW_COLOR : INVALID_PREVIEW_COLOR;
+    graphics.fillStyle(color, PREVIEW_FILL_ALPHA);
+    for (const previewCell of preview.cells) {
+      graphics.fillPoints(this.cellCorners(previewCell.col, previewCell.row), true, true);
+    }
+
+    graphics.lineStyle(3, color, PREVIEW_LINE_ALPHA);
+    for (const previewCell of preview.cells) {
+      graphics.strokePoints(this.cellCorners(previewCell.col, previewCell.row), true, true);
+    }
+  }
+
+  private clearPlacementPreview() {
+    this.hoveredCell = null;
+    this.placementPreviewGraphics?.clear();
   }
 
   private cellCorners(col: number, row: number) {

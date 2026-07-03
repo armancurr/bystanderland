@@ -5,10 +5,16 @@ import type { PlacedTile } from "./placed-assets";
 
 export type CellClickAction = "place" | "erase";
 
+export type PlacementPreview = {
+  cells: Array<{ col: number; row: number }>;
+  isValid: boolean;
+};
+
 export type MovementSceneData = {
   placedTiles: PlacedTile[];
   placeableSprites: BakedPlaceableSprites;
   onCellClick: (col: number, row: number, action: CellClickAction) => void;
+  getPlacementPreview: (col: number, row: number) => PlacementPreview | null;
 };
 
 export function createMovementGameConfig(
