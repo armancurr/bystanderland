@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   placeableSpriteKey,
-  type AssetPack,
+  type BakedAssetPack,
   type PlaceableAsset,
   type TileRotation,
 } from "./placed-assets";
@@ -13,13 +13,19 @@ import {
 // Phaser owns the live editor scene. The Kenney assets are GLBs, so each
 // (asset, rotation) is rendered once into a transparent canvas with a 2:1
 // isometric camera, then registered as a Phaser texture.
+//
+// Baking a whole catalog upfront (500+ assets x 4 rotations) is expensive
+// (GLTF fetch + parse + a full WebGL render per rotation), so sprites are now
+// produced on demand (see sprite-cache.ts) and cached persistently in
+// IndexedDB so a given browser only ever pays the render cost once.
 // ---------------------------------------------------------------------------
 
 const textureModules = {
-  roads: import.meta.glob(
-    "../../assets/kenney_city-kit-roads/Models/GLB format/Textures/*.png",
-    { query: "?url", import: "default", eager: true },
-  ) as Record<string, string>,
+  roads: import.meta.glob("../../assets/kenney_city-kit-roads/Models/GLB format/Textures/*.png", {
+    query: "?url",
+    import: "default",
+    eager: true,
+  }) as Record<string, string>,
   commercial: import.meta.glob(
     "../../assets/kenney_city-kit-commercial_2.1/Models/GLB format/Textures/*.png",
     { query: "?url", import: "default", eager: true },
@@ -28,11 +34,15 @@ const textureModules = {
     "../../assets/kenney_city-kit-industrial_1.0/Models/GLB format/Textures/*.png",
     { query: "?url", import: "default", eager: true },
   ) as Record<string, string>,
-} satisfies Record<AssetPack, Record<string, string>>;
+  suburban: import.meta.glob(
+    "../../assets/kenney_city-kit-suburban_20/Models/GLB format/Textures/*.png",
+    { query: "?url", import: "default", eager: true },
+  ) as Record<string, string>,
+} satisfies Record<BakedAssetPack, Record<string, string>>;
 
 const CAMERA_DIRECTION = new THREE.Vector3(1, 0.8165, 1).normalize();
 const CAMERA_DISTANCE = 18;
-const TARGET_DIAMOND_PX = 256;
+export const TARGET_DIAMOND_PX = 256;
 const CANVAS_PX = 2048;
 const CROP_PADDING_PX = 8;
 const PX_PER_WORLD = TARGET_DIAMOND_PX / Math.SQRT2;
@@ -56,7 +66,11 @@ export type BakedPlaceableSprites = {
   diamondPx: number;
 };
 
-function createLoadingManager(getPack: () => AssetPack) {
+export function createSpriteStore(): BakedPlaceableSprites {
+  return { sprites: new Map(), diamondPx: TARGET_DIAMOND_PX };
+}
+
+function createLoadingManager(getPack: () => BakedAssetPack) {
   const manager = new THREE.LoadingManager();
   manager.setURLModifier((url) => {
     const textureName = url.split("/").pop();
@@ -118,11 +132,7 @@ function cloneWithMaterials(source: THREE.Object3D) {
   return clone;
 }
 
-function projectedCanvasPoint(
-  point: THREE.Vector3,
-  camera: THREE.Camera,
-  canvasSize: number,
-) {
+function projectedCanvasPoint(point: THREE.Vector3, camera: THREE.Camera, canvasSize: number) {
   const projected = point.clone().project(camera);
   return {
     x: (projected.x * 0.5 + 0.5) * canvasSize,
@@ -170,17 +180,7 @@ function cropRenderedCanvas(
     throw new Error("Failed to acquire 2D context for cropped placeable sprite.");
   }
 
-  ctx.drawImage(
-    source,
-    cropX,
-    cropY,
-    cropWidth,
-    cropHeight,
-    0,
-    0,
-    cropWidth,
-    cropHeight,
-  );
+  ctx.drawImage(source, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
 
   return {
     canvas,
@@ -220,10 +220,22 @@ function renderCroppedModel(
   return cropRenderedCanvas(canvas, origin, projectedBounds);
 }
 
-export async function bakePlaceableSprites(
-  assets: PlaceableAsset[],
-): Promise<BakedPlaceableSprites> {
-  const sprites = new Map<string, BakedPlaceableSprite>();
+type BakeEngine = {
+  renderer: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+  camera: THREE.OrthographicCamera;
+  loader: GLTFLoader;
+  gltfCache: Map<string, THREE.Group>;
+  currentPack: BakedAssetPack;
+};
+
+let engine: BakeEngine | undefined;
+
+function getEngine(): BakeEngine {
+  if (engine) {
+    return engine;
+  }
+
   const renderer = new THREE.WebGLRenderer({
     alpha: true,
     antialias: true,
@@ -253,32 +265,73 @@ export async function bakePlaceableSprites(
   camera.lookAt(0, 0, 0);
   camera.updateProjectionMatrix();
 
-  let currentPack: AssetPack = "roads";
-  const loader = new GLTFLoader(createLoadingManager(() => currentPack));
-  const gltfCache = new Map<string, THREE.Group>();
+  const created: BakeEngine = {
+    renderer,
+    scene,
+    camera,
+    currentPack: "roads",
+    loader: undefined as unknown as GLTFLoader,
+    gltfCache: new Map(),
+  };
+  created.loader = new GLTFLoader(createLoadingManager(() => created.currentPack));
+
+  engine = created;
+  return created;
+}
+
+/**
+ * Bakes a single (asset, rotation) pair into a cropped isometric sprite.
+ * Intended to be called on demand (see sprite-cache.ts), not for the whole
+ * catalog upfront. The underlying GLTF is cached per-asset so requesting
+ * multiple rotations of the same asset only fetches/parses it once.
+ */
+export async function bakeSprite(
+  asset: PlaceableAsset,
+  rotation: TileRotation,
+): Promise<BakedPlaceableSprite> {
+  const bakeEngine = getEngine();
+
+  let source = bakeEngine.gltfCache.get(asset.id);
+  if (!source) {
+    bakeEngine.currentPack = asset.pack as BakedAssetPack;
+    const gltf = await bakeEngine.loader.loadAsync(asset.modelUrl);
+    source = gltf.scene;
+    bakeEngine.gltfCache.set(asset.id, source);
+  }
+
+  const { size } = boundsForModel(source);
+  const model = cloneWithMaterials(source);
+  frameModel(model, rotation);
+
+  const cropped = renderCroppedModel(
+    bakeEngine.renderer,
+    bakeEngine.scene,
+    bakeEngine.camera,
+    model,
+  );
+
+  return {
+    ...cropped,
+    footprint: footprintForSize(size, rotation),
+  };
+}
+
+/**
+ * Bakes every rotation of every given asset upfront. Kept for completeness /
+ * manual pre-warming, but the app no longer calls this for the whole catalog
+ * on boot — use getPlaceableSprite from sprite-cache.ts for on-demand baking
+ * with persistent caching instead.
+ */
+export async function bakePlaceableSprites(
+  assets: PlaceableAsset[],
+): Promise<BakedPlaceableSprites> {
+  const sprites = new Map<string, BakedPlaceableSprite>();
 
   for (const asset of assets) {
-    let source = gltfCache.get(asset.id);
-    if (!source) {
-      currentPack = asset.pack;
-      const gltf = await loader.loadAsync(asset.modelUrl);
-      source = gltf.scene;
-      gltfCache.set(asset.id, source);
-    }
-    const { size } = boundsForModel(source);
-
     for (const rotation of ROTATIONS) {
-      const model = cloneWithMaterials(source);
-      frameModel(model, rotation);
-
-      const cropped = renderCroppedModel(renderer, scene, camera, model);
-      sprites.set(placeableSpriteKey(asset.id, rotation), {
-        ...cropped,
-        footprint: footprintForSize(size, rotation),
-      });
+      sprites.set(placeableSpriteKey(asset.id, rotation), await bakeSprite(asset, rotation));
     }
   }
 
-  renderer.dispose();
   return { sprites, diamondPx: TARGET_DIAMOND_PX };
 }

@@ -2,15 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import Phaser from "phaser";
 import { IsometricMovementScene } from "./game/isometric-movement-scene";
 import { createMovementGameConfig } from "./game/movement-game-config";
-import {
-  bakePlaceableSprites,
-  type BakedPlaceableSprites,
-  type SpriteFootprint,
-} from "./game/placeable-sprite-baker";
+import { createSpriteStore, ensurePlaceableSprites, getPlaceableSprite } from "./game/sprite-cache";
+import type { BakedPlaceableSprites, SpriteFootprint } from "./game/placeable-sprite-baker";
 import {
   placeableSpriteKey,
   placeableAssets,
   placeableAssetsById,
+  type PlaceableAsset,
   type PlacedTile,
   type TileRotation,
 } from "./game/placed-assets";
@@ -92,39 +90,24 @@ function footprintCells(col: number, row: number, footprint: SpriteFootprint) {
   return cells;
 }
 
-function getPlacedTileFootprint(
-  tile: PlacedTile,
-  sprites: BakedPlaceableSprites,
-): SpriteFootprint {
+function getPlacedTileFootprint(tile: PlacedTile, sprites: BakedPlaceableSprites): SpriteFootprint {
   return (
-    sprites.sprites.get(placeableSpriteKey(tile.assetId, tile.rotation))
-      ?.footprint ?? {
+    sprites.sprites.get(placeableSpriteKey(tile.assetId, tile.rotation))?.footprint ?? {
       cols: 1,
       rows: 1,
     }
   );
 }
 
-function containsCell(
-  tile: PlacedTile,
-  sprites: BakedPlaceableSprites,
-  col: number,
-  row: number,
-) {
-  return footprintCells(
-    tile.col,
-    tile.row,
-    getPlacedTileFootprint(tile, sprites),
-  ).some((cell) => cell.col === col && cell.row === row);
+function containsCell(tile: PlacedTile, sprites: BakedPlaceableSprites, col: number, row: number) {
+  return footprintCells(tile.col, tile.row, getPlacedTileFootprint(tile, sprites)).some(
+    (cell) => cell.col === col && cell.row === row,
+  );
 }
 
 function isInBounds(cells: Array<{ col: number; row: number }>) {
   return cells.every(
-    (cell) =>
-      cell.col >= 0 &&
-      cell.col < GRID_COLS &&
-      cell.row >= 0 &&
-      cell.row < GRID_ROWS,
+    (cell) => cell.col >= 0 && cell.col < GRID_COLS && cell.row >= 0 && cell.row < GRID_ROWS,
   );
 }
 
@@ -134,11 +117,9 @@ function intersectsPlacedTile(
   sprites: BakedPlaceableSprites,
 ) {
   const occupied = new Set(
-    footprintCells(
-      placedTile.col,
-      placedTile.row,
-      getPlacedTileFootprint(placedTile, sprites),
-    ).map((cell) => `${cell.col}:${cell.row}`),
+    footprintCells(placedTile.col, placedTile.row, getPlacedTileFootprint(placedTile, sprites)).map(
+      (cell) => `${cell.col}:${cell.row}`,
+    ),
   );
 
   return cells.some((cell) => occupied.has(`${cell.col}:${cell.row}`));
@@ -225,9 +206,7 @@ function MovementRoute() {
   const toolRef = useRef<"asset" | "erase">("asset");
   const rotationRef = useRef<TileRotation>(DEFAULT_TILE_ROTATION);
   const [placedTiles, setPlacedTiles] = useState<PlacedTile[]>(loadPlacedTiles);
-  const [selectedAssetId, setSelectedAssetId] = useState(
-    selectedAssetIdRef.current,
-  );
+  const [selectedAssetId, setSelectedAssetId] = useState(selectedAssetIdRef.current);
   const [tool, setTool] = useState<"asset" | "erase">("asset");
   const [rotation, setRotation] = useState<TileRotation>(DEFAULT_TILE_ROTATION);
   const [isBaking, setIsBaking] = useState(true);
@@ -252,8 +231,26 @@ function MovementRoute() {
     }
 
     let disposed = false;
+    const store = createSpriteStore();
 
-    void bakePlaceableSprites(placeableAssets).then((baked) => {
+    // Only bake/load sprites for assets that are already placed on the map
+    // (persisted from a previous session), instead of the whole catalog.
+    // Anything else gets baked lazily the moment the user actually places it
+    // (see onCellClick below), so startup cost no longer scales with the
+    // size of the asset catalog.
+    const initialRequests = new Map<string, { asset: PlaceableAsset; rotation: TileRotation }>();
+    for (const tile of placedTiles) {
+      const asset = placeableAssetsById.get(tile.assetId);
+      if (!asset) {
+        continue;
+      }
+      initialRequests.set(placeableSpriteKey(tile.assetId, tile.rotation), {
+        asset,
+        rotation: tile.rotation,
+      });
+    }
+
+    void ensurePlaceableSprites(store, Array.from(initialRequests.values())).then(() => {
       if (disposed) {
         return;
       }
@@ -261,44 +258,49 @@ function MovementRoute() {
       const game = new Phaser.Game(
         createMovementGameConfig(container, {
           placedTiles,
-          placeableSprites: baked,
+          placeableSprites: store,
           onCellClick: (col, row, action) => {
-            setPlacedTiles((current) => {
-              if (action === "erase" || toolRef.current === "erase") {
-                return current.filter(
-                  (tile) => !containsCell(tile, baked, col, row),
-                );
+            if (action === "erase" || toolRef.current === "erase") {
+              setPlacedTiles((current) =>
+                current.filter((tile) => !containsCell(tile, store, col, row)),
+              );
+              return;
+            }
+
+            const assetId = selectedAssetIdRef.current;
+            const asset = placeableAssetsById.get(assetId);
+            if (!asset) {
+              return;
+            }
+
+            const rotation = rotationRef.current;
+            void getPlaceableSprite(asset, rotation).then((sprite) => {
+              if (disposed) {
+                return;
               }
 
-              const assetId = selectedAssetIdRef.current;
-              if (!placeableAssetsById.has(assetId)) {
-                return current;
-              }
+              store.sprites.set(placeableSpriteKey(assetId, rotation), sprite);
 
-              const key = placeableSpriteKey(assetId, rotationRef.current);
-              const sprite = baked.sprites.get(key);
-              if (!sprite) {
-                return current;
-              }
+              setPlacedTiles((current) => {
+                const cells = footprintCells(col, row, sprite.footprint);
+                if (
+                  !isInBounds(cells) ||
+                  current.some((tile) => intersectsPlacedTile(cells, tile, store))
+                ) {
+                  return current;
+                }
 
-              const cells = footprintCells(col, row, sprite.footprint);
-              if (
-                !isInBounds(cells) ||
-                current.some((tile) => intersectsPlacedTile(cells, tile, baked))
-              ) {
-                return current;
-              }
-
-              return [
-                ...current,
-                {
-                  id: `tile:${col}:${row}`,
-                  assetId,
-                  col,
-                  row,
-                  rotation: rotationRef.current,
-                },
-              ];
+                return [
+                  ...current,
+                  {
+                    id: `tile:${col}:${row}`,
+                    assetId,
+                    col,
+                    row,
+                    rotation,
+                  },
+                ];
+              });
             });
           },
         }),
@@ -323,7 +325,8 @@ function MovementRoute() {
     }
 
     const scene = game.scene.getScene("isometric-movement-scene") as
-      IsometricMovementScene | undefined;
+      | IsometricMovementScene
+      | undefined;
     scene?.setPlacedTiles(placedTiles);
   }, [placedTiles]);
 
@@ -409,12 +412,7 @@ function MovementRoute() {
               >
                 <RemoveIcon />
               </button>
-              <button
-                type="button"
-                onClick={clearMap}
-                title="Clear map"
-                aria-label="Clear map"
-              >
+              <button type="button" onClick={clearMap} title="Clear map" aria-label="Clear map">
                 <ClearIcon />
               </button>
             </>
@@ -423,37 +421,19 @@ function MovementRoute() {
 
         {isPanelOpen ? (
           <div className="editor-pack-list">
-            {isBaking ? (
-              <div
-                className="editor-loading"
-                role="status"
-                aria-live="polite"
-                aria-label="Preparing assets"
-              >
-                <span className="editor-loading__spinner">
-                  <SpinnerIcon />
-                </span>
-                <span>Preparing assets...</span>
-              </div>
-            ) : (
-              <div className="asset-grid">
-                {placeableAssets.map((asset) => (
-                  <button
-                    key={asset.id}
-                    type="button"
-                    className={
-                      tool === "asset" && selectedAssetId === asset.id
-                        ? "is-active"
-                        : ""
-                    }
-                    onClick={() => selectAsset(asset.id)}
-                    title={asset.label}
-                  >
-                    <img src={asset.previewUrl} alt="" />
-                  </button>
-                ))}
-              </div>
-            )}
+            <div className="asset-grid">
+              {placeableAssets.map((asset) => (
+                <button
+                  key={asset.id}
+                  type="button"
+                  className={tool === "asset" && selectedAssetId === asset.id ? "is-active" : ""}
+                  onClick={() => selectAsset(asset.id)}
+                  title={asset.label}
+                >
+                  <img src={asset.previewUrl} alt="" loading="lazy" />
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
       </aside>

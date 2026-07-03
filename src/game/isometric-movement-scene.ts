@@ -31,9 +31,7 @@ export class IsometricMovementScene extends Phaser.Scene {
   }
 
   create() {
-    const data = this.registry.get("movementSceneData") as
-      | MovementSceneData
-      | undefined;
+    const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
 
     this.cameras.main.setBackgroundColor(BG_COLOR);
 
@@ -59,6 +57,12 @@ export class IsometricMovementScene extends Phaser.Scene {
 
   setPlacedTiles(placedTiles: PlacedTile[]) {
     this.placedTiles = placedTiles;
+    // Sprites can be baked/loaded lazily after the scene was created (e.g.
+    // the user just placed an asset that hadn't been baked yet), so make
+    // sure any newly available textures get registered before redrawing.
+    this.registerPlaceableTextures(
+      this.registry.get("movementSceneData") as MovementSceneData | undefined,
+    );
     this.drawLand();
     if (!this.placedAssetGroup) {
       return;
@@ -141,9 +145,7 @@ export class IsometricMovementScene extends Phaser.Scene {
       return;
     }
 
-    const data = this.registry.get("movementSceneData") as
-      | MovementSceneData
-      | undefined;
+    const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
     const cell = this.screenToGrid(pointer);
     if (!cell || !data) {
       return;
@@ -220,9 +222,11 @@ export class IsometricMovementScene extends Phaser.Scene {
     return (
       ASSET_DEPTH_BASE +
       start.col +
-      sprite.footprint.cols - 1 +
+      sprite.footprint.cols -
+      1 +
       start.row +
-      sprite.footprint.rows - 1
+      sprite.footprint.rows -
+      1
     );
   }
 
@@ -253,9 +257,7 @@ export class IsometricMovementScene extends Phaser.Scene {
   private drawPlacedAssets() {
     this.placedAssetGroup?.clear(true, true);
 
-    const data = this.registry.get("movementSceneData") as
-      | MovementSceneData
-      | undefined;
+    const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
     if (!data) {
       return;
     }
@@ -284,12 +286,9 @@ export class IsometricMovementScene extends Phaser.Scene {
   }
 
   private drawLand() {
-    const data = this.registry.get("movementSceneData") as
-      | MovementSceneData
-      | undefined;
+    const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
     const occupied = this.occupiedCellKeys(data);
-    const graphics =
-      this.landGraphics ?? this.add.graphics().setDepth(LAND_DEPTH);
+    const graphics = this.landGraphics ?? this.add.graphics().setDepth(LAND_DEPTH);
     this.landGraphics = graphics;
     graphics.clear();
 
