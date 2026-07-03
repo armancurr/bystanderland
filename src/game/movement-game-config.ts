@@ -20,7 +20,7 @@ export function createMovementGameConfig(
     parent,
     width: parent.clientWidth,
     height: parent.clientHeight,
-    backgroundColor: "#9AD872",
+    backgroundColor: "#9CB080",
     disableContextMenu: true,
     scene: [IsometricMovementScene],
     callbacks: {

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import Phaser from "phaser";
-import { CityScene } from "./city/city-scene";
 import { IsometricMovementScene } from "./game/isometric-movement-scene";
 import { createMovementGameConfig } from "./game/movement-game-config";
 import {
@@ -20,25 +19,6 @@ const PLACED_TILES_STORAGE_KEY = "bystanderland:placed-tiles:v1";
 const GRID_COLS = 40;
 const GRID_ROWS = 40;
 const DEFAULT_TILE_ROTATION: TileRotation = 180;
-
-type CityStats = {
-  roadTiles: number;
-  blocks: number;
-  homes: number;
-  cameraMode: string;
-};
-
-function usePathname() {
-  const [pathname, setPathname] = useState(() => window.location.pathname);
-
-  useEffect(() => {
-    const handlePopState = () => setPathname(window.location.pathname);
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
-
-  return pathname;
-}
 
 function isTileRotation(value: unknown): value is TileRotation {
   return value === 0 || value === 90 || value === 180 || value === 270;
@@ -235,66 +215,6 @@ function SpinnerIcon() {
     >
       <path d="M136,32V64a8,8,0,0,1-16,0V32a8,8,0,0,1,16,0Zm88,88H192a8,8,0,0,0,0,16h32a8,8,0,0,0,0-16Zm-45.09,47.6a8,8,0,0,0-11.31,11.31l22.62,22.63a8,8,0,0,0,11.32-11.32ZM128,184a8,8,0,0,0-8,8v32a8,8,0,0,0,16,0V192A8,8,0,0,0,128,184ZM77.09,167.6,54.46,190.22a8,8,0,0,0,11.32,11.32L88.4,178.91A8,8,0,0,0,77.09,167.6ZM72,128a8,8,0,0,0-8-8H32a8,8,0,0,0,0,16H64A8,8,0,0,0,72,128ZM65.78,54.46A8,8,0,0,0,54.46,65.78L77.09,88.4A8,8,0,0,0,88.4,77.09Z" />
     </svg>
-  );
-}
-
-function CityRoute() {
-  const sceneRef = useRef<CityScene | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [stats, setStats] = useState<CityStats>({
-    roadTiles: 0,
-    blocks: 0,
-    homes: 0,
-    cameraMode: "Orthographic",
-  });
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) {
-      return;
-    }
-
-    const scene = new CityScene(container, {
-      onStatsChange: setStats,
-    });
-    sceneRef.current = scene;
-
-    return () => {
-      sceneRef.current = null;
-      scene.dispose();
-    };
-  }, []);
-
-  return (
-    <main className="city-shell">
-      <div ref={containerRef} className="city-viewport" />
-      <section className="city-overlay" aria-label="Map status">
-        <div>
-          <p className="city-kicker">Suburban Township</p>
-        </div>
-        <dl className="city-status">
-          <div>
-            <dt>Road tiles</dt>
-            <dd>{stats.roadTiles}</dd>
-          </div>
-          <div>
-            <dt>Blocks</dt>
-            <dd>{stats.blocks}</dd>
-          </div>
-          <div>
-            <dt>Homes</dt>
-            <dd>{stats.homes}</dd>
-          </div>
-          <div>
-            <dt>Camera</dt>
-            <dd>{stats.cameraMode}</dd>
-          </div>
-        </dl>
-        <button type="button" onClick={() => sceneRef.current?.resetCamera()}>
-          Reset camera
-        </button>
-      </section>
-    </main>
   );
 }
 
@@ -522,11 +442,5 @@ function MovementRoute() {
 }
 
 export function App() {
-  const pathname = usePathname();
-
-  if (pathname === "/city") {
-    return <CityRoute />;
-  }
-
   return <MovementRoute />;
 }

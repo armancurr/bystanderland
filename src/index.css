@@ -35,124 +35,12 @@ input {
   font: inherit;
 }
 
-.city-shell {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: #a9bdc1;
-}
-
-.forest-shell {
-  background: #9CB080;
-}
-
-.city-viewport {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  cursor: grab;
-}
-
-.city-viewport:active {
-  cursor: grabbing;
-}
-
-.city-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  touch-action: none;
-}
-
-.city-overlay {
-  position: absolute;
-  top: 18px;
-  left: 18px;
-  display: grid;
-  gap: 14px;
-  width: min(320px, calc(100vw - 36px));
-  padding: 16px;
-  color: #f8fbf4;
-  background: rgba(27, 33, 31, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 8px;
-  box-shadow: 0 22px 60px rgba(21, 28, 28, 0.28);
-  backdrop-filter: blur(12px);
-  pointer-events: auto;
-}
-
-.city-kicker {
-  margin: 0 0 3px;
-  color: #d3dbc6;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.city-overlay h1 {
-  margin: 0;
-  font-size: clamp(1.4rem, 4vw, 2rem);
-  line-height: 1.05;
-}
-
-.city-status {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin: 0;
-}
-
-.city-status div {
-  min-width: 0;
-  padding: 10px;
-  background: rgba(244, 247, 240, 0.08);
-  border: 1px solid rgba(244, 247, 240, 0.1);
-  border-radius: 6px;
-}
-
-.city-status dt {
-  margin-bottom: 4px;
-  color: #c6cec1;
-  font-size: 0.72rem;
-}
-
-.city-status dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-  font-size: 0.95rem;
-  font-weight: 700;
-}
-
-.city-overlay button {
-  min-height: 40px;
-  color: #17201d;
-  background: #d9e4cd;
-  border: 0;
-  border-radius: 6px;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.city-overlay button:hover {
-  background: #edf4df;
-}
-
-.forest-overlay {
-  background: rgba(23, 34, 25, 0.84);
-}
-
-.forest-overlay .city-status {
-  grid-template-columns: 1fr 1fr;
-}
-
 .movement-shell {
   position: relative;
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #9ad872;
+  background: #9CB080;
 }
 
 .movement-viewport {
@@ -362,17 +250,6 @@ input {
 }
 
 @media (max-width: 640px) {
-  .city-overlay {
-    top: 12px;
-    left: 12px;
-    width: min(300px, calc(100vw - 24px));
-    padding: 12px;
-  }
-
-  .city-status {
-    grid-template-columns: 1fr;
-  }
-
   .editor-toolbar {
     top: 8px;
     bottom: 8px;
