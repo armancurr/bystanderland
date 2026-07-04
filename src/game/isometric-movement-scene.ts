@@ -551,7 +551,10 @@ export class IsometricMovementScene extends Phaser.Scene {
     const isAdjacent = Math.abs(deltaCol) + Math.abs(deltaRow) === 1;
     const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
     if (!isAdjacent) {
-      return Promise.resolve({ success: false, reason: "Next path step is not adjacent." } as const);
+      return Promise.resolve({
+        success: false,
+        reason: "Next path step is not adjacent.",
+      } as const);
     }
 
     if (

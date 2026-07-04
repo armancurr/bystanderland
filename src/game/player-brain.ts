@@ -53,11 +53,7 @@ function wanderCandidates(origin: GridCell, world: WorldModel) {
     for (let row = origin.row - WANDER_RADIUS; row <= origin.row + WANDER_RADIUS; row += 1) {
       const cell = { col, row };
       const distance = Math.abs(origin.col - col) + Math.abs(origin.row - row);
-      if (
-        distance >= 3 &&
-        isGridCellInBounds(cell) &&
-        !world.blockedCellKeys.has(cellKey(cell))
-      ) {
+      if (distance >= 3 && isGridCellInBounds(cell) && !world.blockedCellKeys.has(cellKey(cell))) {
         candidates.push(cell);
       }
     }

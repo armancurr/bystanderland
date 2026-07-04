@@ -177,7 +177,8 @@ export function createAgentBrainController(
 
   function nearbyAgents(agent: CharacterAgentState) {
     return agentList().filter(
-      (other) => other.id !== agent.id && manhattanDistance(agent.cell, other.cell) <= TALK_DISTANCE,
+      (other) =>
+        other.id !== agent.id && manhattanDistance(agent.cell, other.cell) <= TALK_DISTANCE,
     );
   }
 
@@ -234,7 +235,8 @@ export function createAgentBrainController(
   }
 
   function advanceSpeaker(conversation: ConversationState) {
-    conversation.speakerIndex = (conversation.speakerIndex + 1) % conversation.participantIds.length;
+    conversation.speakerIndex =
+      (conversation.speakerIndex + 1) % conversation.participantIds.length;
   }
 
   async function runMovement(agent: CharacterAgentState, targetCell: GridCell) {

@@ -1,10 +1,6 @@
 import * as EasyStar from "easystarjs";
 import type { BakedPlaceableSprites, SpriteFootprint } from "./placeable-sprite-baker";
-import {
-  placeableAssetsById,
-  placeableSpriteKey,
-  type PlacedTile,
-} from "./placed-assets";
+import { placeableAssetsById, placeableSpriteKey, type PlacedTile } from "./placed-assets";
 
 export const GRID_COLS = 40;
 export const GRID_ROWS = 40;

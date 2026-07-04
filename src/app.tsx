@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Command } from "cmdk";
 import Phaser from "phaser";
 import {
@@ -11,10 +11,7 @@ import {
   tileAtCell,
   type WorldModel,
 } from "./game/grid-world";
-import {
-  createAgentBrainController,
-  type ChatMessage,
-} from "./game/agent-brain";
+import { createAgentBrainController, type ChatMessage } from "./game/agent-brain";
 import { IsometricMovementScene } from "./game/isometric-movement-scene";
 import { createMovementGameConfig } from "./game/movement-game-config";
 import { createSpriteStore, ensurePlaceableSprites, getPlaceableSprite } from "./game/sprite-cache";
@@ -172,30 +169,10 @@ function isEditableTarget(target: EventTarget | null) {
   );
 }
 
-function rotationLabel(rotation: TileRotation) {
-  switch (rotation) {
-    case 0:
-      return "North";
-    case 90:
-      return "East";
-    case 180:
-      return "South";
-    case 270:
-      return "West";
-  }
-}
-
 function nextRotation(rotation: TileRotation, direction: 1 | -1) {
   const rotations: TileRotation[] = [0, 90, 180, 270];
   const index = rotations.indexOf(rotation);
   return rotations[(index + direction + rotations.length) % rotations.length];
-}
-
-function packLabel(pack: string) {
-  return pack
-    .split("-")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 function Shortcut({ children }: { children: string }) {
@@ -262,13 +239,6 @@ function MovementRoute() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   const selectedAsset = placeableAssetsById.get(selectedAssetId) ?? placeableAssets[0];
-  const assetsByPack = useMemo(() => {
-    const groups = new Map<string, PlaceableAsset[]>();
-    for (const asset of placeableAssets) {
-      groups.set(asset.pack, [...(groups.get(asset.pack) ?? []), asset]);
-    }
-    return Array.from(groups);
-  }, []);
 
   useEffect(() => {
     selectedAssetIdRef.current = selectedAssetId;
@@ -638,6 +608,8 @@ function MovementRoute() {
 
   const commandItem =
     "flex min-h-11 cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-sm text-[#eef4ea] outline-none aria-selected:bg-[#d9e4cd] aria-selected:text-[#17201d] data-[selected=true]:bg-[#d9e4cd] data-[selected=true]:text-[#17201d]";
+  const commandAssetItem =
+    "flex aspect-square cursor-pointer items-center justify-center rounded-md p-3 outline-none aria-selected:bg-[#35443d] data-[selected=true]:bg-[#35443d]";
   const commandMeta = "ml-auto flex shrink-0 items-center gap-1.5 text-xs opacity-80";
 
   return (
@@ -687,15 +659,17 @@ function MovementRoute() {
         className="fixed left-1/2 top-[12vh] z-10 flex max-h-[76vh] w-[min(680px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-lg border border-[#3f4e47] bg-[#273338] text-[#eef4ea] shadow-[0_28px_80px_rgba(23,32,29,0.42)]"
       >
         <div className="flex items-center gap-2 border-b border-[#3f4e47] px-3 py-2">
-          {commandPage === "assets" ? (
-            <button
-              type="button"
-              onClick={() => setCommandPage("root")}
-              className="rounded px-2 py-1 text-sm text-[#cdd8c4] hover:bg-[#35443d] hover:text-[#eef4ea]"
-            >
-              Back
-            </button>
-          ) : null}
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            fill="#96a79d"
+            viewBox="0 0 256 256"
+            aria-hidden="true"
+            className="shrink-0"
+          >
+            <path d="M168,112a56,56,0,1,1-56-56A56,56,0,0,1,168,112Zm61.66,117.66a8,8,0,0,1-11.32,0l-50.06-50.07a88,88,0,1,1,11.32-11.31l50.06,50.06A8,8,0,0,1,229.66,229.66ZM112,184a72,72,0,1,0-72-72A72.08,72.08,0,0,0,112,184Z" />
+          </svg>
           <Command.Input
             ref={commandSearchRef}
             placeholder={commandPage === "assets" ? "Search assets..." : "Search commands..."}
@@ -770,58 +744,25 @@ function MovementRoute() {
                   ) : null}
                 </Command.Item>
               </Command.Group>
-              <Command.Group
-                heading="Current Selection"
-                className="[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-[#96a79d]"
-              >
-                {selectedAsset ? (
-                  <Command.Item
-                    value={`${selectedAsset.label} ${selectedAsset.id}`}
-                    onSelect={() => setCommandPage("assets")}
-                    className={commandItem}
-                  >
-                    <img
-                      src={selectedAsset.previewUrl}
-                      alt=""
-                      className="h-10 w-10 shrink-0 object-contain"
-                    />
-                    <span className="min-w-0 flex-1 truncate">{selectedAsset.label}</span>
-                    <span className="text-xs opacity-80">Facing {rotationLabel(rotation)}</span>
-                  </Command.Item>
-                ) : null}
-              </Command.Group>
             </>
           ) : (
-            assetsByPack.map(([pack, assets]) => (
-              <Command.Group
-                key={pack}
-                heading={packLabel(pack)}
-                className="[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-[#96a79d]"
-              >
-                {assets.map((asset) => (
-                  <Command.Item
-                    key={asset.id}
-                    value={`${asset.label} ${asset.id} ${asset.category} ${asset.pack}`}
-                    onSelect={() => selectAsset(asset.id)}
-                    className={commandItem}
-                  >
-                    <img
-                      src={asset.previewUrl}
-                      alt=""
-                      className="h-12 w-12 shrink-0 object-contain"
-                      loading="lazy"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{asset.label}</span>
-                      <span className="block truncate text-xs opacity-75">{asset.id}</span>
-                    </span>
-                    {selectedAssetId === asset.id ? (
-                      <span className="text-xs font-semibold">Selected</span>
-                    ) : null}
-                  </Command.Item>
-                ))}
-              </Command.Group>
-            ))
+            <Command.Group className="[&_[cmdk-group-items]]:grid [&_[cmdk-group-items]]:grid-cols-4 [&_[cmdk-group-items]]:gap-2">
+              {placeableAssets.map((asset) => (
+                <Command.Item
+                  key={asset.id}
+                  value={`${asset.label} ${asset.id} ${asset.category} ${asset.pack}`}
+                  onSelect={() => selectAsset(asset.id)}
+                  className={`${commandAssetItem} ${selectedAssetId === asset.id ? "bg-[#d9e4cd]" : ""}`}
+                >
+                  <img
+                    src={asset.previewUrl}
+                    alt={asset.label}
+                    className="h-[56%] w-[56%] object-contain"
+                    loading="lazy"
+                  />
+                </Command.Item>
+              ))}
+            </Command.Group>
           )}
         </Command.List>
       </Command.Dialog>
