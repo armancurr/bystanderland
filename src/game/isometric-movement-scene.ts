@@ -62,6 +62,7 @@ export class IsometricMovementScene extends Phaser.Scene {
   private dragStart = new Phaser.Math.Vector2(0, 0);
   private lastDragPointer = new Phaser.Math.Vector2(0, 0);
   private characters = new Map<string, SceneCharacter>();
+  private allowKeyboardMovement = false;
 
   constructor() {
     super("isometric-movement-scene");
@@ -86,6 +87,7 @@ export class IsometricMovementScene extends Phaser.Scene {
     this.drawLand();
     this.registerPlaceableTextures(data);
     this.registerCharacterTextures(data);
+    this.allowKeyboardMovement = data?.allowKeyboardMovement ?? false;
     this.placedTiles = data?.placedTiles ?? [];
     this.placedAssetGroup = this.add.group();
     this.drawPlacedAssets();
@@ -110,6 +112,10 @@ export class IsometricMovementScene extends Phaser.Scene {
     }
     this.drawPlacedAssets();
     this.refreshPlacementPreview();
+  }
+
+  setAllowKeyboardMovement(allowKeyboardMovement: boolean) {
+    this.allowKeyboardMovement = allowKeyboardMovement;
   }
 
   refreshPlacementPreview() {
@@ -213,12 +219,10 @@ export class IsometricMovementScene extends Phaser.Scene {
   }
 
   private createKeyboardControls() {
-    const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
-    if (!data?.allowKeyboardMovement) {
-      return;
-    }
-
     this.input.keyboard?.on("keydown", (event: KeyboardEvent) => {
+      if (!this.allowKeyboardMovement) {
+        return;
+      }
       if (event.repeat) {
         return;
       }

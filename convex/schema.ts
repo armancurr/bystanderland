@@ -67,7 +67,12 @@ export default defineSchema({
     label: v.string(),
     cell,
     homePlaceStableId: v.string(),
-    activity: v.union(v.literal("idle"), v.literal("moving"), v.literal("talking"), v.literal("waiting")),
+    activity: v.union(
+      v.literal("idle"),
+      v.literal("moving"),
+      v.literal("talking"),
+      v.literal("waiting"),
+    ),
     currentTask: v.union(v.string(), v.null()),
     updatedAt: v.number(),
   })

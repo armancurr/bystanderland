@@ -208,7 +208,8 @@ export const importLocalTiles = mutation({
 
     for (const tile of args.tiles) {
       const owner = homeCandidates.findIndex((candidate) => candidate.stableId === tile.stableId);
-      const ownerCharacter = owner >= 0 && owner < characterSeeds.length ? characterSeeds[owner] : null;
+      const ownerCharacter =
+        owner >= 0 && owner < characterSeeds.length ? characterSeeds[owner] : null;
       const placeKind = tile.placeKind ?? (ownerCharacter ? "home" : kindFromAssetId(tile.assetId));
       await ctx.db.insert("tiles", {
         worldId: world._id,
@@ -217,7 +218,9 @@ export const importLocalTiles = mutation({
         col: tile.col,
         row: tile.row,
         rotation: tile.rotation,
-        label: tile.label ?? (ownerCharacter ? `${ownerCharacter.label} Home` : labelFromAssetId(tile.assetId)),
+        label:
+          tile.label ??
+          (ownerCharacter ? `${ownerCharacter.label} Home` : labelFromAssetId(tile.assetId)),
         placeKind,
         ownerCharacterId: tile.ownerCharacterId ?? ownerCharacter?.characterId ?? null,
         updatedAt: timestamp,
@@ -239,8 +242,14 @@ export const getState = query({
     }
 
     const [tiles, places, characters, actions, chatMessages] = await Promise.all([
-      ctx.db.query("tiles").withIndex("by_worldId", (q) => q.eq("worldId", world._id)).collect(),
-      ctx.db.query("places").withIndex("by_worldId", (q) => q.eq("worldId", world._id)).collect(),
+      ctx.db
+        .query("tiles")
+        .withIndex("by_worldId", (q) => q.eq("worldId", world._id))
+        .collect(),
+      ctx.db
+        .query("places")
+        .withIndex("by_worldId", (q) => q.eq("worldId", world._id))
+        .collect(),
       ctx.db
         .query("characters")
         .withIndex("by_worldId", (q) => q.eq("worldId", world._id))
@@ -249,7 +258,10 @@ export const getState = query({
         .query("agentActions")
         .withIndex("by_worldId", (q) => q.eq("worldId", world._id))
         .collect(),
-      ctx.db.query("chatMessages").withIndex("by_worldId", (q) => q.eq("worldId", world._id)).collect(),
+      ctx.db
+        .query("chatMessages")
+        .withIndex("by_worldId", (q) => q.eq("worldId", world._id))
+        .collect(),
     ]);
 
     return {
@@ -272,7 +284,10 @@ export const getTurnContext = query({
     }
 
     const [places, characters, actions, chatMessages] = await Promise.all([
-      ctx.db.query("places").withIndex("by_worldId", (q) => q.eq("worldId", world._id)).collect(),
+      ctx.db
+        .query("places")
+        .withIndex("by_worldId", (q) => q.eq("worldId", world._id))
+        .collect(),
       ctx.db
         .query("characters")
         .withIndex("by_worldId", (q) => q.eq("worldId", world._id))
@@ -281,7 +296,10 @@ export const getTurnContext = query({
         .query("agentActions")
         .withIndex("by_worldId", (q) => q.eq("worldId", world._id))
         .collect(),
-      ctx.db.query("chatMessages").withIndex("by_worldId", (q) => q.eq("worldId", world._id)).collect(),
+      ctx.db
+        .query("chatMessages")
+        .withIndex("by_worldId", (q) => q.eq("worldId", world._id))
+        .collect(),
     ]);
 
     const character = characters.find((candidate) => candidate.characterId === args.characterId);

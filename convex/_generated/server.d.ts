@@ -25,8 +25,8 @@ import type { DataModel } from "./dataModel.js";
  * Typesafe environment variables declared in `convex.config.ts`.
  */
 type Env = {
-  readonly AI_GATEWAY_API_KEY: string | undefined;
-  readonly AI_GATEWAY_MODEL: string | undefined;
+  readonly GROQ_API_KEY: string | undefined;
+  readonly GROQ_MODEL: string | undefined;
 };
 
 /**

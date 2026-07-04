@@ -201,7 +201,10 @@ function fallbackOpenEdgeCell(blocked: Set<string>) {
     { col: 4, row: GRID_ROWS - 5 },
     { col: GRID_COLS - 5, row: GRID_ROWS - 5 },
   ];
-  return candidates.find((cell) => !blocked.has(cellKey(cell))) ?? nearestWalkableCell(candidates[0], blocked);
+  return (
+    candidates.find((cell) => !blocked.has(cellKey(cell))) ??
+    nearestWalkableCell(candidates[0], blocked)
+  );
 }
 
 function worldPlace(
@@ -235,14 +238,21 @@ export function buildWorldModel(placedTiles: PlacedTile[], sprites: BakedPlaceab
   const fallbackHome = nearestWalkableCell(PLAYER_START_CELL, blocked);
   const workTile = firstTileMatching(
     placedTiles,
-    (asset) => asset.category === "building" && (asset.pack === "commercial" || asset.pack === "industrial"),
+    (asset) =>
+      asset.category === "building" && (asset.pack === "commercial" || asset.pack === "industrial"),
   );
   const natureTile = firstTileMatching(placedTiles, (asset) => asset.category === "nature");
   const roadTile = firstTileMatching(placedTiles, (asset) => asset.category === "road");
   const places: WorldModel["places"] = {
     home_or_building: worldPlace("home_or_building", "home", homeTile, fallbackHome, blocked),
     work_site: worldPlace("work_site", "work site", workTile, { col: 20, row: 20 }, blocked),
-    nature_spot: worldPlace("nature_spot", "nature spot", natureTile, fallbackOpenEdgeCell(blocked), blocked),
+    nature_spot: worldPlace(
+      "nature_spot",
+      "nature spot",
+      natureTile,
+      fallbackOpenEdgeCell(blocked),
+      blocked,
+    ),
     road_patrol: worldPlace("road_patrol", "road patrol", roadTile, { col: 21, row: 20 }, blocked),
   };
 

@@ -475,7 +475,9 @@ export function createAgentBrainController(
         return { actionId: "wait", reason: "Brief pause before next task." };
       }
       agent.currentTask = makeTask(nextTaskId(agent), agent, world);
-    } else if (differentCell(agent.currentTask.target, taskTarget(agent.currentTask.taskId, agent, world))) {
+    } else if (
+      differentCell(agent.currentTask.target, taskTarget(agent.currentTask.taskId, agent, world))
+    ) {
       agent.currentTask = makeTask(agent.currentTask.taskId, agent, world);
     }
 

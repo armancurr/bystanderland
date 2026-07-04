@@ -190,6 +190,31 @@ function convexTileToPlacedTile(tile: Doc<"tiles">): PlacedTile {
   };
 }
 
+function nearestWalkableCell(target: GridCell, world: WorldModel) {
+  if (!world.blockedCellKeys.has(`${target.col}:${target.row}`)) {
+    return target;
+  }
+
+  for (let radius = 1; radius < Math.max(world.cols, world.rows); radius += 1) {
+    for (let col = target.col - radius; col <= target.col + radius; col += 1) {
+      for (let row = target.row - radius; row <= target.row + radius; row += 1) {
+        const cell = { col, row };
+        if (
+          col >= 0 &&
+          col < world.cols &&
+          row >= 0 &&
+          row < world.rows &&
+          !world.blockedCellKeys.has(`${col}:${row}`)
+        ) {
+          return cell;
+        }
+      }
+    }
+  }
+
+  return target;
+}
+
 function SpinnerIcon() {
   return (
     <svg
@@ -263,6 +288,88 @@ function ChatPanel({ messages }: { messages: Doc<"chatMessages">[] }) {
   );
 }
 
+function AgentLogPanel({
+  actions,
+  characters,
+  places,
+}: {
+  actions: Doc<"agentActions">[];
+  characters: Doc<"characters">[];
+  places: Doc<"places">[];
+}) {
+  const characterById = new Map(characters.map((character) => [character.characterId, character]));
+  const placeByStableId = new Map(places.map((place) => [place.stableId, place]));
+  const recentActions = [...actions].sort((a, b) => b.createdAt - a.createdAt).slice(0, 8);
+
+  return (
+    <section
+      className="absolute left-3 top-16 z-[4] flex max-h-[34vh] w-[min(420px,calc(100vw-24px))] flex-col overflow-hidden rounded-md border border-[#0b1720]/55 bg-[#101820]/82 font-['Geist_Mono'] text-xs text-[#eef4ea] shadow-[0_12px_34px_rgba(5,12,16,0.26)] backdrop-blur"
+      aria-label="Agent log"
+    >
+      <div className="flex items-center justify-between border-b border-[#273338] px-3 py-2">
+        <strong className="text-[#f7fbf2]">Agent Log</strong>
+        <span className="text-[#cdd8c4]/70">latest tool calls</span>
+      </div>
+      <div className="min-h-0 overflow-auto px-3 py-2 scrollbar-none">
+        <div className="mb-2 grid gap-1 border-b border-[#273338] pb-2 text-[#cdd8c4]">
+          {characters.map((character) => (
+            <div key={character._id} className="flex items-center justify-between gap-2">
+              <span>{character.label}</span>
+              <span className="truncate text-right text-[#f7fbf2]">
+                {character.currentTask ?? character.activity}
+              </span>
+            </div>
+          ))}
+        </div>
+        {recentActions.length === 0 ? (
+          <p className="text-[#cdd8c4]/70">No agent actions yet.</p>
+        ) : (
+          <ol className="grid gap-2">
+            {recentActions.map((action) => {
+              const character = characterById.get(action.characterId);
+              const place = action.targetPlaceStableId
+                ? placeByStableId.get(action.targetPlaceStableId)
+                : null;
+              const target = place
+                ? place.label
+                : action.targetCell
+                  ? `${action.targetCell.col},${action.targetCell.row}`
+                  : action.message
+                    ? `"${action.message}"`
+                    : "none";
+              return (
+                <li key={action._id} className="rounded bg-[#17201d]/80 p-2 leading-5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-[#f7fbf2]">
+                      {character?.label ?? action.characterId} / {action.actionId}
+                    </span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 ${
+                        action.status === "failed"
+                          ? "bg-[#5b2222] text-[#ffd0c9]"
+                          : action.status === "completed"
+                            ? "bg-[#23442f] text-[#d9e4cd]"
+                            : "bg-[#4b3c1b] text-[#ffe2a3]"
+                      }`}
+                    >
+                      {action.status}
+                    </span>
+                  </div>
+                  <div className="truncate text-[#cdd8c4]">target: {target}</div>
+                  <div className="break-words text-[#f7fbf2]">reason: {action.reason}</div>
+                  {action.result ? (
+                    <div className="break-words text-[#cdd8c4]">result: {action.result}</div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function ModePanel({
   mode,
   onSetMode,
@@ -275,7 +382,7 @@ function ModePanel({
   isRunning: boolean;
 }) {
   return (
-    <div className="absolute left-3 top-16 z-[4] flex items-center gap-1.5 rounded-md bg-[#273338]/88 px-2.5 py-2 text-xs text-[#eef4ea] shadow-[0_10px_24px_rgba(23,32,29,0.16)] backdrop-blur">
+    <div className="absolute bottom-3 right-3 z-[4] flex items-center gap-1.5 rounded-md bg-[#273338]/88 px-2.5 py-2 text-xs text-[#eef4ea] shadow-[0_10px_24px_rgba(23,32,29,0.16)] backdrop-blur">
       <button
         type="button"
         onClick={() => onSetMode("auto")}
@@ -405,6 +512,7 @@ function MovementRoute() {
   const toolRef = useRef<EditorTool>("explore");
   const rotationRef = useRef<TileRotation>(DEFAULT_TILE_ROTATION);
   const placedTilesRef = useRef<PlacedTile[]>([]);
+  const modeRef = useRef<SimulationMode>("auto");
   const commandSearchRef = useRef<HTMLInputElement | null>(null);
   const runningActionsRef = useRef(new Set<string>());
   const [selectedAssetId, setSelectedAssetId] = useState(selectedAssetIdRef.current);
@@ -421,6 +529,7 @@ function MovementRoute() {
   const characters = state?.characters ?? [];
   const places = state?.places ?? [];
   const mode = state?.world.mode ?? "auto";
+  const isWorldReady = state !== undefined && state !== null;
   const selectedAsset = placeableAssetsById.get(selectedAssetId) ?? placeableAssets[0];
   const selectedTile = convexTiles.find((tile) => tile.stableId === selectedTileStableId);
 
@@ -466,8 +575,12 @@ function MovementRoute() {
   }, [placedTiles]);
 
   useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
+  useEffect(() => {
     const container = containerRef.current;
-    if (!container || state === undefined || !state || gameRef.current) {
+    if (!container || !isWorldReady || gameRef.current) {
       return;
     }
 
@@ -518,7 +631,7 @@ function MovementRoute() {
           placedTiles,
           placeableSprites: store,
           characters: sceneCharacters,
-          allowKeyboardMovement: mode === "mock_manual",
+          allowKeyboardMovement: modeRef.current === "mock_manual",
           getPlacementPreview: (col, row) => {
             if (toolRef.current === "remove") {
               const tile = tileAtCell(placedTilesRef.current, store, col, row);
@@ -628,7 +741,7 @@ function MovementRoute() {
       gameRef.current?.destroy(true);
       gameRef.current = null;
     };
-  }, [deleteTile, characters, mode, placedTiles, state, upsertTile]);
+  }, [deleteTile, isWorldReady, upsertTile]);
 
   useEffect(() => {
     const store = placeableSpritesRef.current;
@@ -646,6 +759,18 @@ function MovementRoute() {
     );
     worldModelRef.current = buildWorldModel(placedTiles, store);
   }, [characters, placedTiles]);
+
+  useEffect(() => {
+    const game = gameRef.current;
+    if (!game) {
+      return;
+    }
+
+    const scene = game.scene.getScene("isometric-movement-scene") as
+      | IsometricMovementScene
+      | undefined;
+    scene?.setAllowKeyboardMovement(mode === "mock_manual");
+  }, [mode]);
 
   useEffect(() => {
     const store = placeableSpritesRef.current;
@@ -766,9 +891,18 @@ function MovementRoute() {
     let targetCell: GridCell | null = null;
     if (action.actionId === "move_to_place" || action.actionId === "inspect_place") {
       const place = places.find((candidate) => candidate.stableId === action.targetPlaceStableId);
-      targetCell = place?.entryCell ?? null;
+      if (!place) {
+        await setActionStatus({
+          actionId: action._id as Id<"agentActions">,
+          status: "failed",
+          result: `Unknown place target: ${action.targetPlaceStableId ?? "none"}.`,
+          characterCell: startCell,
+        });
+        return;
+      }
+      targetCell = nearestWalkableCell(place.entryCell, world);
     } else if (action.actionId === "move_to_cell") {
-      targetCell = action.targetCell;
+      targetCell = action.targetCell ? nearestWalkableCell(action.targetCell, world) : null;
     }
 
     if (targetCell) {
@@ -782,25 +916,37 @@ function MovementRoute() {
         });
         return;
       }
+      if (path.length <= 1) {
+        await setActionStatus({
+          actionId: action._id as Id<"agentActions">,
+          status: "completed",
+          result: action.reason || "Already at target.",
+          characterCell: startCell,
+        });
+        return;
+      }
       const result = await scene.moveCharacterAlongPath(action.characterId, path);
       const cell = scene.getCharacterCell(action.characterId) ?? startCell;
       await setActionStatus({
         actionId: action._id as Id<"agentActions">,
         status: result.success ? "completed" : "failed",
-        result: result.success ? (action.reason || (result.message ?? "Done.")) : result.reason,
+        result: result.success ? action.reason || (result.message ?? "Done.") : result.reason,
         characterCell: cell,
       });
       return;
     }
 
-    window.setTimeout(() => {
-      void setActionStatus({
-        actionId: action._id as Id<"agentActions">,
-        status: "completed",
-        result: action.reason || "Done.",
-        characterCell: startCell,
-      });
-    }, action.actionId === "wait" ? 700 : 250);
+    window.setTimeout(
+      () => {
+        void setActionStatus({
+          actionId: action._id as Id<"agentActions">,
+          status: "completed",
+          result: action.reason || "Done.",
+          characterCell: startCell,
+        });
+      },
+      action.actionId === "wait" ? 700 : 250,
+    );
   }
 
   function selectAsset(assetId: string) {
@@ -886,6 +1032,31 @@ function MovementRoute() {
     });
   }
 
+  async function handleRunPopulationStep() {
+    if (mode === "mock_manual") {
+      await runMockStep();
+      return;
+    }
+
+    setIsRunningLlm(true);
+    try {
+      const result = await runPopulationStep();
+      console.info("Population step result:", result);
+      for (const turn of result.results ?? []) {
+        if (!turn.ok) {
+          console.warn("Character turn failed:", turn.characterId, turn.reason);
+        }
+      }
+      if (!result.ok) {
+        console.warn("Population step failed:", result.reason ?? result);
+      }
+    } catch (error) {
+      console.error("Population step action failed:", error);
+    } finally {
+      setIsRunningLlm(false);
+    }
+  }
+
   const commandItem =
     "flex min-h-11 cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-sm text-[#eef4ea] outline-none aria-selected:bg-[#d9e4cd] aria-selected:text-[#17201d] data-[selected=true]:bg-[#d9e4cd] data-[selected=true]:text-[#17201d]";
   const commandAssetItem =
@@ -894,7 +1065,7 @@ function MovementRoute() {
 
   return (
     <main className="relative h-full w-full overflow-hidden bg-[#9cb080]">
-      <span className="absolute left-3 top-3 z-[3] p-3 font-['Bytesized'] text-2xl text-[#273338] select-none pointer-events-none">
+      <span className="absolute left-3 top-3 z-[3] pl-3 pt-3 font-['Bytesized'] text-2xl leading-none text-[#273338] select-none pointer-events-none">
         townbase
       </span>
       <div
@@ -902,19 +1073,17 @@ function MovementRoute() {
         className="absolute inset-0 overflow-hidden cursor-crosshair [&_canvas]:block [&_canvas]:h-full [&_canvas]:w-full [&_canvas]:touch-none [&_canvas]:cursor-crosshair"
       />
       <ChatPanel messages={state?.chatMessages ?? []} />
+      <AgentLogPanel
+        actions={state?.actions ?? []}
+        characters={characters}
+        places={places}
+      />
       {state?.world ? (
         <ModePanel
           mode={mode}
           onSetMode={(nextMode) => void setMode({ mode: nextMode })}
           isRunning={isRunningLlm}
-          onRunPopulationStep={() => {
-            if (mode === "mock_manual") {
-              void runMockStep();
-              return;
-            }
-            setIsRunningLlm(true);
-            void runPopulationStep().finally(() => setIsRunningLlm(false));
-          }}
+          onRunPopulationStep={() => void handleRunPopulationStep()}
         />
       ) : null}
       <MetadataPanel
@@ -1017,8 +1186,7 @@ function MovementRoute() {
                 value="run population auto llm step"
                 onSelect={() => {
                   setIsCommandOpen(false);
-                  setIsRunningLlm(true);
-                  void runPopulationStep().finally(() => setIsRunningLlm(false));
+                  void handleRunPopulationStep();
                 }}
                 className={commandItem}
               >
