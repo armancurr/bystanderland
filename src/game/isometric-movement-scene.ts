@@ -1,15 +1,20 @@
 import Phaser from "phaser";
+import {
+  GRID_COLS,
+  GRID_ROWS,
+  PLAYER_START_CELL,
+  blockedMovementCellKeys,
+  cellKey,
+  footprintStart,
+  isGridCellInBounds,
+  occupiedCellKeys,
+  type ActionResult,
+  type GridCell,
+} from "./grid-world";
 import type { CellClickAction, MovementSceneData } from "./movement-game-config";
 import type { BakedPlaceableSprite, SpriteFootprint } from "./placeable-sprite-baker";
-import {
-  placeableAssetsById,
-  placeableSpriteKey,
-  type PlacedTile,
-  type TileRotation,
-} from "./placed-assets";
+import { placeableSpriteKey, type PlacedTile, type TileRotation } from "./placed-assets";
 
-const GRID_COLS = 40;
-const GRID_ROWS = 40;
 const TILE_WIDTH = 128;
 const TILE_HEIGHT = 64;
 const BG_COLOR = "#9CB080";
@@ -23,31 +28,40 @@ const INVALID_PREVIEW_COLOR = 0xef4c42;
 const REMOVE_PREVIEW_COLOR = 0xf2b84b;
 const PREVIEW_FILL_ALPHA = 0.34;
 const PREVIEW_LINE_ALPHA = 0.9;
+const VALID_ASSET_PREVIEW_ALPHA = 0.72;
+const INVALID_ASSET_PREVIEW_ALPHA = 0.48;
+const ASSET_PREVIEW_DEPTH_OFFSET = 0.5;
 const CAMERA_DRAG_THRESHOLD = 4;
 const LAND_DEPTH = -3000;
 const PLACEMENT_PREVIEW_DEPTH = -2500;
 const ASSET_DEPTH_BASE = -1000;
-const PLAYER_TEXTURE_KEY = "player-character";
-const PLAYER_START_CELL = { col: 20, row: 20 };
 const PLAYER_MOVE_MS = 300;
 const PLAYER_SCALE = 0.1;
 const DEFAULT_PLAYER_ROTATION: TileRotation = 180;
+
+type SceneCharacter = {
+  id: string;
+  name: string;
+  cell: GridCell;
+  rotation: TileRotation;
+  sprite: Phaser.GameObjects.Image;
+  tween?: Phaser.Tweens.Tween;
+  tweenResolve?: (result: ActionResult) => void;
+};
 
 export class IsometricMovementScene extends Phaser.Scene {
   private origin = new Phaser.Math.Vector2(0, 0);
   private placedTiles: PlacedTile[] = [];
   private landGraphics?: Phaser.GameObjects.Graphics;
   private placementPreviewGraphics?: Phaser.GameObjects.Graphics;
+  private placementPreviewAsset?: Phaser.GameObjects.Image;
   private placedAssetGroup?: Phaser.GameObjects.Group;
   private hoveredCell: { col: number; row: number } | null = null;
   private activeDragPointerId: number | null = null;
   private isCameraDragging = false;
   private dragStart = new Phaser.Math.Vector2(0, 0);
   private lastDragPointer = new Phaser.Math.Vector2(0, 0);
-  private playerCell = { ...PLAYER_START_CELL };
-  private playerRotation: TileRotation = DEFAULT_PLAYER_ROTATION;
-  private playerSprite?: Phaser.GameObjects.Image;
-  private playerTween?: Phaser.Tweens.Tween;
+  private characters = new Map<string, SceneCharacter>();
 
   constructor() {
     super("isometric-movement-scene");
@@ -71,11 +85,11 @@ export class IsometricMovementScene extends Phaser.Scene {
 
     this.drawLand();
     this.registerPlaceableTextures(data);
-    this.registerPlayerTexture(data);
+    this.registerCharacterTextures(data);
     this.placedTiles = data?.placedTiles ?? [];
     this.placedAssetGroup = this.add.group();
     this.drawPlacedAssets();
-    this.createPlayer();
+    this.createCharacters();
     this.cameras.main.centerOn(this.origin.x, this.origin.y + worldHeight * 0.35);
     this.createPointerControls();
     this.createKeyboardControls();
@@ -83,6 +97,7 @@ export class IsometricMovementScene extends Phaser.Scene {
 
   setPlacedTiles(placedTiles: PlacedTile[]) {
     this.placedTiles = placedTiles;
+    this.stopAllCharacterMovement();
     // Sprites can be baked/loaded lazily after the scene was created (e.g.
     // the user just placed an asset that hadn't been baked yet), so make
     // sure any newly available textures get registered before redrawing.
@@ -98,7 +113,55 @@ export class IsometricMovementScene extends Phaser.Scene {
   }
 
   refreshPlacementPreview() {
+    this.registerPlaceableTextures(
+      this.registry.get("movementSceneData") as MovementSceneData | undefined,
+    );
     this.drawPlacementPreview(this.hoveredCell);
+  }
+
+  getCharacterCell(id: string): GridCell | null {
+    const character = this.characters.get(id);
+    return character ? { ...character.cell } : null;
+  }
+
+  isCharacterMoving(id: string) {
+    return Boolean(this.characters.get(id)?.tween?.isPlaying());
+  }
+
+  stopAllCharacterMovement() {
+    for (const character of this.characters.values()) {
+      if (!character.tween) {
+        continue;
+      }
+
+      character.tween.stop();
+      character.tween = undefined;
+      character.tweenResolve?.({ success: false, reason: "Movement stopped." });
+      character.tweenResolve = undefined;
+      const position = this.gridToScreen(character.cell.col, character.cell.row);
+      character.sprite.setPosition(position.x, position.y);
+      this.updateCharacterDepth(character);
+    }
+  }
+
+  async moveCharacterAlongPath(id: string, path: GridCell[]): Promise<ActionResult> {
+    const character = this.characters.get(id);
+    if (!character) {
+      return { success: false, reason: "Character sprite is not ready." };
+    }
+
+    if (path.length <= 1) {
+      return { success: true, message: "Already at target." };
+    }
+
+    for (const step of path.slice(1)) {
+      const result = await this.moveCharacterToAdjacentCell(character, step);
+      if (!result.success) {
+        return result;
+      }
+    }
+
+    return { success: true, message: "Arrived." };
   }
 
   private registerPlaceableTextures(data: MovementSceneData | undefined) {
@@ -113,15 +176,17 @@ export class IsometricMovementScene extends Phaser.Scene {
     }
   }
 
-  private registerPlayerTexture(data: MovementSceneData | undefined) {
+  private registerCharacterTextures(data: MovementSceneData | undefined) {
     if (!data) {
       return;
     }
 
-    for (const [rotation, sprite] of data.playerSprites) {
-      const key = this.playerTextureKey(rotation as TileRotation);
-      if (!this.textures.exists(key)) {
-        this.textures.addCanvas(key, sprite.canvas);
+    for (const character of data.characters) {
+      for (const [rotation, sprite] of character.sprites) {
+        const key = this.characterTextureKey(character.id, rotation as TileRotation);
+        if (!this.textures.exists(key)) {
+          this.textures.addCanvas(key, sprite.canvas);
+        }
       }
     }
   }
@@ -146,7 +211,7 @@ export class IsometricMovementScene extends Phaser.Scene {
       }
 
       event.preventDefault();
-      this.movePlayerBy(direction.col, direction.row);
+      this.moveCharacterBy("aria", direction.col, direction.row);
     });
   }
 
@@ -186,8 +251,8 @@ export class IsometricMovementScene extends Phaser.Scene {
     return 270;
   }
 
-  private playerTextureKey(rotation: TileRotation) {
-    return `${PLAYER_TEXTURE_KEY}@${rotation}`;
+  private characterTextureKey(id: string, rotation: TileRotation) {
+    return `character:${id}@${rotation}`;
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer) {
@@ -301,7 +366,7 @@ export class IsometricMovementScene extends Phaser.Scene {
   }
 
   private isInBounds(col: number, row: number) {
-    return col >= 0 && col < GRID_COLS && row >= 0 && row < GRID_ROWS;
+    return isGridCellInBounds({ col, row });
   }
 
   private gridToScreen(col: number, row: number) {
@@ -312,10 +377,7 @@ export class IsometricMovementScene extends Phaser.Scene {
   }
 
   private footprintStart(col: number, row: number, footprint: SpriteFootprint) {
-    return {
-      col: Math.round(col - (footprint.cols - 1) / 2),
-      row: Math.round(row - (footprint.rows - 1) / 2),
-    };
+    return footprintStart({ col, row }, footprint);
   }
 
   private footprintCenter(col: number, row: number, footprint: SpriteFootprint) {
@@ -326,7 +388,7 @@ export class IsometricMovementScene extends Phaser.Scene {
     };
   }
 
-  private assetDepth(tile: PlacedTile, sprite: BakedPlaceableSprite) {
+  private assetDepth(tile: Pick<PlacedTile, "col" | "row">, sprite: BakedPlaceableSprite) {
     const start = this.footprintStart(tile.col, tile.row, sprite.footprint);
     return (
       ASSET_DEPTH_BASE +
@@ -339,83 +401,94 @@ export class IsometricMovementScene extends Phaser.Scene {
     );
   }
 
+  private assetScreenPosition(tile: Pick<PlacedTile, "col" | "row">, sprite: BakedPlaceableSprite) {
+    const centerCell = this.footprintCenter(tile.col, tile.row, sprite.footprint);
+    return this.gridToScreen(centerCell.col, centerCell.row);
+  }
+
+  private placeAssetImage(
+    image: Phaser.GameObjects.Image,
+    tile: Pick<PlacedTile, "col" | "row">,
+    sprite: BakedPlaceableSprite,
+    textureKey: string,
+    scale: number,
+    depthOffset = 0,
+  ) {
+    const position = this.assetScreenPosition(tile, sprite);
+    return image
+      .setTexture(textureKey)
+      .setPosition(position.x, position.y)
+      .setOrigin(sprite.originX / sprite.canvas.width, sprite.originY / sprite.canvas.height)
+      .setScale(scale)
+      .setDepth(this.assetDepth(tile, sprite) + depthOffset);
+  }
+
   private occupiedCellKeys(data: MovementSceneData | undefined) {
-    const occupied = new Set<string>();
-    if (!data) {
-      return occupied;
-    }
-
-    for (const tile of this.placedTiles) {
-      const key = placeableSpriteKey(tile.assetId, tile.rotation);
-      const bakedSprite = data.placeableSprites.sprites.get(key);
-      if (!bakedSprite) {
-        continue;
-      }
-
-      const start = this.footprintStart(tile.col, tile.row, bakedSprite.footprint);
-      for (let offsetCol = 0; offsetCol < bakedSprite.footprint.cols; offsetCol += 1) {
-        for (let offsetRow = 0; offsetRow < bakedSprite.footprint.rows; offsetRow += 1) {
-          occupied.add(`${start.col + offsetCol}:${start.row + offsetRow}`);
-        }
-      }
-    }
-
-    return occupied;
+    return data ? occupiedCellKeys(this.placedTiles, data.placeableSprites) : new Set<string>();
   }
 
   private blockedMovementCellKeys(data: MovementSceneData | undefined) {
-    const blocked = new Set<string>();
-    if (!data) {
-      return blocked;
-    }
-
-    for (const tile of this.placedTiles) {
-      const asset = placeableAssetsById.get(tile.assetId);
-      if (asset?.category === "road") {
-        continue;
-      }
-
-      const key = placeableSpriteKey(tile.assetId, tile.rotation);
-      const bakedSprite = data.placeableSprites.sprites.get(key);
-      if (!bakedSprite) {
-        continue;
-      }
-
-      const start = this.footprintStart(tile.col, tile.row, bakedSprite.footprint);
-      for (let offsetCol = 0; offsetCol < bakedSprite.footprint.cols; offsetCol += 1) {
-        for (let offsetRow = 0; offsetRow < bakedSprite.footprint.rows; offsetRow += 1) {
-          blocked.add(`${start.col + offsetCol}:${start.row + offsetRow}`);
-        }
-      }
-    }
-
-    return blocked;
+    return data ? blockedMovementCellKeys(this.placedTiles, data.placeableSprites) : new Set();
   }
 
-  private createPlayer() {
+  private createCharacters() {
     const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
-    const playerSprite = data?.playerSprites.get(this.playerRotation);
-    const textureKey = this.playerTextureKey(this.playerRotation);
-    if (!data || !playerSprite || !this.textures.exists(textureKey)) {
+    if (!data) {
       return;
     }
 
-    this.playerCell = this.firstAvailablePlayerCell(data);
-    const position = this.gridToScreen(this.playerCell.col, this.playerCell.row);
-    const scale = (TILE_WIDTH / data.placeableSprites.diamondPx) * PLAYER_SCALE;
-    this.playerSprite = this.add
-      .image(position.x, position.y, textureKey)
-      .setOrigin(
-        playerSprite.originX / playerSprite.canvas.width,
-        playerSprite.originY / playerSprite.canvas.height,
-      )
-      .setScale(scale);
-    this.updatePlayerDepth();
+    this.characters.clear();
+    const reserved = new Set<string>();
+    data.characters.forEach((characterConfig, index) => {
+      const rotation = DEFAULT_PLAYER_ROTATION;
+      const characterSprite = characterConfig.sprites.get(rotation);
+      const textureKey = this.characterTextureKey(characterConfig.id, rotation);
+      if (!characterSprite || !this.textures.exists(textureKey)) {
+        return;
+      }
+
+      const cell = this.firstAvailableCharacterCell(data, index, reserved);
+      reserved.add(cellKey(cell));
+      const position = this.gridToScreen(cell.col, cell.row);
+      const scale = (TILE_WIDTH / data.placeableSprites.diamondPx) * PLAYER_SCALE;
+      const sprite = this.add
+        .image(position.x, position.y, textureKey)
+        .setOrigin(
+          characterSprite.originX / characterSprite.canvas.width,
+          characterSprite.originY / characterSprite.canvas.height,
+        )
+        .setScale(scale);
+      const character: SceneCharacter = {
+        id: characterConfig.id,
+        name: characterConfig.name,
+        cell,
+        rotation,
+        sprite,
+      };
+      this.characters.set(character.id, character);
+      this.updateCharacterDepth(character);
+    });
   }
 
-  private firstAvailablePlayerCell(data: MovementSceneData) {
+  private firstAvailableCharacterCell(
+    data: MovementSceneData,
+    index: number,
+    reserved: Set<string>,
+  ) {
     const blocked = this.blockedMovementCellKeys(data);
-    if (!blocked.has(`${PLAYER_START_CELL.col}:${PLAYER_START_CELL.row}`)) {
+    const preferred = {
+      col: PLAYER_START_CELL.col + index - 1,
+      row: PLAYER_START_CELL.row + Math.abs(index - 1),
+    };
+    if (
+      this.isInBounds(preferred.col, preferred.row) &&
+      !blocked.has(cellKey(preferred)) &&
+      !reserved.has(cellKey(preferred))
+    ) {
+      return preferred;
+    }
+
+    if (!blocked.has(cellKey(PLAYER_START_CELL)) && !reserved.has(cellKey(PLAYER_START_CELL))) {
       return { ...PLAYER_START_CELL };
     }
 
@@ -430,7 +503,11 @@ export class IsometricMovementScene extends Phaser.Scene {
           row <= PLAYER_START_CELL.row + radius;
           row += 1
         ) {
-          if (this.isInBounds(col, row) && !blocked.has(`${col}:${row}`)) {
+          if (
+            this.isInBounds(col, row) &&
+            !blocked.has(cellKey({ col, row })) &&
+            !reserved.has(cellKey({ col, row }))
+          ) {
             return { col, row };
           }
         }
@@ -440,65 +517,105 @@ export class IsometricMovementScene extends Phaser.Scene {
     return { ...PLAYER_START_CELL };
   }
 
-  private movePlayerBy(deltaCol: number, deltaRow: number) {
-    if (this.playerTween?.isPlaying()) {
+  private moveCharacterBy(id: string, deltaCol: number, deltaRow: number) {
+    const character = this.characters.get(id);
+    if (!character || character.tween?.isPlaying()) {
       return;
     }
 
     const nextRotation = this.directionToRotation(deltaCol, deltaRow);
     const nextCell = {
-      col: this.playerCell.col + deltaCol,
-      row: this.playerCell.row + deltaRow,
+      col: character.cell.col + deltaCol,
+      row: character.cell.row + deltaRow,
     };
     const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
     if (
       !data ||
-      !this.playerSprite ||
       !this.isInBounds(nextCell.col, nextCell.row) ||
-      this.blockedMovementCellKeys(data).has(`${nextCell.col}:${nextCell.row}`)
+      this.blockedMovementCellKeys(data).has(cellKey(nextCell))
     ) {
       return;
     }
 
-    this.setPlayerRotation(nextRotation);
-    this.playerCell = nextCell;
-    const position = this.gridToScreen(nextCell.col, nextCell.row);
-    this.updatePlayerDepth();
-    this.playerTween = this.tweens.add({
-      targets: this.playerSprite,
-      x: position.x,
-      y: position.y,
-      duration: PLAYER_MOVE_MS,
-      ease: "Sine.easeInOut",
-      onComplete: () => {
-        this.playerTween = undefined;
-        this.updatePlayerDepth();
-      },
+    this.setCharacterRotation(character, nextRotation);
+    void this.tweenCharacterToCell(character, nextCell);
+  }
+
+  private moveCharacterToAdjacentCell(character: SceneCharacter, nextCell: GridCell) {
+    if (character.tween?.isPlaying()) {
+      return Promise.resolve({ success: false, reason: "Character is already moving." } as const);
+    }
+
+    const deltaCol = nextCell.col - character.cell.col;
+    const deltaRow = nextCell.row - character.cell.row;
+    const isAdjacent = Math.abs(deltaCol) + Math.abs(deltaRow) === 1;
+    const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
+    if (!isAdjacent) {
+      return Promise.resolve({ success: false, reason: "Next path step is not adjacent." } as const);
+    }
+
+    if (
+      !data ||
+      !this.isInBounds(nextCell.col, nextCell.row) ||
+      this.blockedMovementCellKeys(data).has(cellKey(nextCell))
+    ) {
+      return Promise.resolve({ success: false, reason: "Next path step is blocked." } as const);
+    }
+
+    this.setCharacterRotation(character, this.directionToRotation(deltaCol, deltaRow));
+    return this.tweenCharacterToCell(character, nextCell);
+  }
+
+  private tweenCharacterToCell(character: SceneCharacter, nextCell: GridCell) {
+    return new Promise<ActionResult>((resolve) => {
+      if (!character.sprite) {
+        resolve({ success: false, reason: "Character sprite is not ready." });
+        return;
+      }
+
+      character.cell = nextCell;
+      const position = this.gridToScreen(nextCell.col, nextCell.row);
+      this.updateCharacterDepth(character);
+      character.tween = this.tweens.add({
+        targets: character.sprite,
+        x: position.x,
+        y: position.y,
+        duration: PLAYER_MOVE_MS,
+        ease: "Sine.easeInOut",
+        onComplete: () => {
+          character.tween = undefined;
+          character.tweenResolve = undefined;
+          this.updateCharacterDepth(character);
+          resolve({ success: true, message: "Step complete." });
+        },
+      });
+      character.tweenResolve = resolve;
     });
   }
 
-  private updatePlayerDepth() {
-    this.playerSprite?.setDepth(ASSET_DEPTH_BASE + this.playerCell.col + this.playerCell.row + 1);
+  private updateCharacterDepth(character: SceneCharacter) {
+    character.sprite.setDepth(ASSET_DEPTH_BASE + character.cell.col + character.cell.row + 1);
   }
 
-  private setPlayerRotation(rotation: TileRotation) {
-    if (rotation === this.playerRotation || !this.playerSprite) {
+  private setCharacterRotation(character: SceneCharacter, rotation: TileRotation) {
+    if (rotation === character.rotation) {
       return;
     }
 
     const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
-    const playerSprite = data?.playerSprites.get(rotation);
-    const textureKey = this.playerTextureKey(rotation);
-    if (!playerSprite || !this.textures.exists(textureKey)) {
+    const characterConfig = data?.characters.find((candidate) => candidate.id === character.id);
+    const characterSprite = characterConfig?.sprites.get(rotation);
+    const textureKey = this.characterTextureKey(character.id, rotation);
+    if (!characterSprite || !this.textures.exists(textureKey)) {
       return;
     }
 
-    this.playerRotation = rotation;
-    this.playerSprite
+    character.rotation = rotation;
+    character.sprite
       .setTexture(textureKey)
       .setOrigin(
-        playerSprite.originX / playerSprite.canvas.width,
-        playerSprite.originY / playerSprite.canvas.height,
+        characterSprite.originX / characterSprite.canvas.width,
+        characterSprite.originY / characterSprite.canvas.height,
       );
   }
 
@@ -510,7 +627,6 @@ export class IsometricMovementScene extends Phaser.Scene {
       return;
     }
 
-    const scale = TILE_WIDTH / data.placeableSprites.diamondPx;
     for (const tile of this.placedTiles) {
       const key = placeableSpriteKey(tile.assetId, tile.rotation);
       const bakedSprite = data.placeableSprites.sprites.get(key);
@@ -518,16 +634,13 @@ export class IsometricMovementScene extends Phaser.Scene {
         continue;
       }
 
-      const centerCell = this.footprintCenter(tile.col, tile.row, bakedSprite.footprint);
-      const center = this.gridToScreen(centerCell.col, centerCell.row);
-      const sprite = this.add
-        .image(center.x, center.y, key)
-        .setOrigin(
-          bakedSprite.originX / bakedSprite.canvas.width,
-          bakedSprite.originY / bakedSprite.canvas.height,
-        )
-        .setScale(scale)
-        .setDepth(this.assetDepth(tile, bakedSprite));
+      const sprite = this.placeAssetImage(
+        this.add.image(0, 0, key),
+        tile,
+        bakedSprite,
+        key,
+        this.assetScale(data),
+      );
 
       this.placedAssetGroup?.add(sprite);
     }
@@ -573,11 +686,13 @@ export class IsometricMovementScene extends Phaser.Scene {
 
     const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
     if (!data || !cell) {
+      this.clearPlacementPreviewAsset();
       return;
     }
 
     const preview = data.getPlacementPreview(cell.col, cell.row);
     if (!preview) {
+      this.clearPlacementPreviewAsset();
       return;
     }
 
@@ -596,11 +711,59 @@ export class IsometricMovementScene extends Phaser.Scene {
     for (const previewCell of preview.cells) {
       graphics.strokePoints(this.cellCorners(previewCell.col, previewCell.row), true, true);
     }
+
+    this.drawPlacementPreviewAsset(cell, data, preview);
   }
 
   private clearPlacementPreview() {
     this.hoveredCell = null;
     this.placementPreviewGraphics?.clear();
+    this.clearPlacementPreviewAsset();
+  }
+
+  private assetScale(data: MovementSceneData) {
+    return TILE_WIDTH / data.placeableSprites.diamondPx;
+  }
+
+  private drawPlacementPreviewAsset(
+    cell: { col: number; row: number },
+    data: MovementSceneData,
+    preview: ReturnType<MovementSceneData["getPlacementPreview"]>,
+  ) {
+    if (!preview || preview.intent !== "place" || !preview.textureKey) {
+      this.clearPlacementPreviewAsset();
+      return;
+    }
+
+    const bakedSprite = data.placeableSprites.sprites.get(preview.textureKey);
+    if (!bakedSprite || !this.textures.exists(preview.textureKey)) {
+      this.clearPlacementPreviewAsset();
+      return;
+    }
+
+    const image = this.placementPreviewAsset ?? this.add.image(0, 0, preview.textureKey);
+    this.placementPreviewAsset = image;
+    this.placeAssetImage(
+      image,
+      cell,
+      bakedSprite,
+      preview.textureKey,
+      this.assetScale(data),
+      ASSET_PREVIEW_DEPTH_OFFSET,
+    )
+      .setVisible(true)
+      .setAlpha(preview.isValid ? VALID_ASSET_PREVIEW_ALPHA : INVALID_ASSET_PREVIEW_ALPHA);
+
+    if (preview.isValid) {
+      image.clearTint();
+    } else {
+      image.setTint(INVALID_PREVIEW_COLOR);
+    }
+  }
+
+  private clearPlacementPreviewAsset() {
+    this.placementPreviewAsset?.destroy();
+    this.placementPreviewAsset = undefined;
   }
 
   private cellCorners(col: number, row: number) {

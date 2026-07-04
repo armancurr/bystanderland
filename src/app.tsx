@@ -1,10 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Command } from "cmdk";
 import Phaser from "phaser";
+import {
+  buildWorldModel,
+  cellsAreInBounds,
+  containsCell,
+  footprintCells,
+  getPlacedTileFootprint,
+  intersectsPlacedTile,
+  tileAtCell,
+  type WorldModel,
+} from "./game/grid-world";
+import {
+  createAgentBrainController,
+  type ChatMessage,
+} from "./game/agent-brain";
 import { IsometricMovementScene } from "./game/isometric-movement-scene";
 import { createMovementGameConfig } from "./game/movement-game-config";
 import { createSpriteStore, ensurePlaceableSprites, getPlaceableSprite } from "./game/sprite-cache";
-import type { BakedPlaceableSprites, SpriteFootprint } from "./game/placeable-sprite-baker";
+import type { BakedPlaceableSprite, BakedPlaceableSprites } from "./game/placeable-sprite-baker";
 import {
   placeableSpriteKey,
   placeableAssets,
@@ -14,30 +28,74 @@ import {
   type TileRotation,
 } from "./game/placed-assets";
 
-const playerModelUrl = new URL(
-  "../assets/kenney_blocky-characters_20/Models/GLB format/character-a.glb",
-  import.meta.url,
-).href;
-const playerPreviewUrl = new URL(
-  "../assets/kenney_blocky-characters_20/Previews/character-a.png",
-  import.meta.url,
-).href;
-
 const PLACED_TILES_STORAGE_KEY = "bystanderland:placed-tiles:v1";
-const GRID_COLS = 40;
-const GRID_ROWS = 40;
 const DEFAULT_TILE_ROTATION: TileRotation = 180;
 const PLAYER_ROTATIONS: TileRotation[] = [0, 90, 180, 270];
-const PLAYER_ASSET: PlaceableAsset = {
-  id: "characters:character-a",
-  label: "Character A",
-  category: "building",
-  pack: "characters",
-  previewUrl: playerPreviewUrl,
-  modelUrl: playerModelUrl,
+
+type CharacterConfig = {
+  id: string;
+  name: string;
+  asset: PlaceableAsset;
 };
 
-type EditorTool = "asset" | "remove";
+const CHARACTER_CONFIGS: CharacterConfig[] = [
+  {
+    id: "aria",
+    name: "Aria",
+    asset: {
+      id: "characters:character-a",
+      label: "Character A",
+      category: "building",
+      pack: "characters",
+      previewUrl: new URL(
+        "../assets/kenney_blocky-characters_20/Previews/character-a.png",
+        import.meta.url,
+      ).href,
+      modelUrl: new URL(
+        "../assets/kenney_blocky-characters_20/Models/GLB format/character-a.glb",
+        import.meta.url,
+      ).href,
+    },
+  },
+  {
+    id: "milo",
+    name: "Milo",
+    asset: {
+      id: "characters:character-b",
+      label: "Character B",
+      category: "building",
+      pack: "characters",
+      previewUrl: new URL(
+        "../assets/kenney_blocky-characters_20/Previews/character-b.png",
+        import.meta.url,
+      ).href,
+      modelUrl: new URL(
+        "../assets/kenney_blocky-characters_20/Models/GLB format/character-b.glb",
+        import.meta.url,
+      ).href,
+    },
+  },
+  {
+    id: "nora",
+    name: "Nora",
+    asset: {
+      id: "characters:character-c",
+      label: "Character C",
+      category: "building",
+      pack: "characters",
+      previewUrl: new URL(
+        "../assets/kenney_blocky-characters_20/Previews/character-c.png",
+        import.meta.url,
+      ).href,
+      modelUrl: new URL(
+        "../assets/kenney_blocky-characters_20/Models/GLB format/character-c.glb",
+        import.meta.url,
+      ).href,
+    },
+  },
+];
+
+type EditorTool = "explore" | "asset" | "remove";
 type CommandPage = "root" | "assets";
 
 function isTileRotation(value: unknown): value is TileRotation {
@@ -87,68 +145,6 @@ function loadPlacedTiles() {
 
 function savePlacedTiles(tiles: PlacedTile[]) {
   window.localStorage.setItem(PLACED_TILES_STORAGE_KEY, JSON.stringify(tiles));
-}
-
-function footprintStart(col: number, row: number, footprint: SpriteFootprint) {
-  return {
-    col: Math.round(col - (footprint.cols - 1) / 2),
-    row: Math.round(row - (footprint.rows - 1) / 2),
-  };
-}
-
-function footprintCells(col: number, row: number, footprint: SpriteFootprint) {
-  const start = footprintStart(col, row, footprint);
-  const cells: Array<{ col: number; row: number }> = [];
-
-  for (let offsetCol = 0; offsetCol < footprint.cols; offsetCol += 1) {
-    for (let offsetRow = 0; offsetRow < footprint.rows; offsetRow += 1) {
-      cells.push({
-        col: start.col + offsetCol,
-        row: start.row + offsetRow,
-      });
-    }
-  }
-
-  return cells;
-}
-
-function getPlacedTileFootprint(tile: PlacedTile, sprites: BakedPlaceableSprites): SpriteFootprint {
-  return (
-    sprites.sprites.get(placeableSpriteKey(tile.assetId, tile.rotation))?.footprint ?? {
-      cols: 1,
-      rows: 1,
-    }
-  );
-}
-
-function containsCell(tile: PlacedTile, sprites: BakedPlaceableSprites, col: number, row: number) {
-  return footprintCells(tile.col, tile.row, getPlacedTileFootprint(tile, sprites)).some(
-    (cell) => cell.col === col && cell.row === row,
-  );
-}
-
-function tileAtCell(tiles: PlacedTile[], sprites: BakedPlaceableSprites, col: number, row: number) {
-  return tiles.find((tile) => containsCell(tile, sprites, col, row));
-}
-
-function isInBounds(cells: Array<{ col: number; row: number }>) {
-  return cells.every(
-    (cell) => cell.col >= 0 && cell.col < GRID_COLS && cell.row >= 0 && cell.row < GRID_ROWS,
-  );
-}
-
-function intersectsPlacedTile(
-  cells: Array<{ col: number; row: number }>,
-  placedTile: PlacedTile,
-  sprites: BakedPlaceableSprites,
-) {
-  const occupied = new Set(
-    footprintCells(placedTile.col, placedTile.row, getPlacedTileFootprint(placedTile, sprites)).map(
-      (cell) => `${cell.col}:${cell.row}`,
-    ),
-  );
-
-  return cells.some((cell) => occupied.has(`${cell.col}:${cell.row}`));
 }
 
 function SpinnerIcon() {
@@ -210,22 +206,60 @@ function Shortcut({ children }: { children: string }) {
   );
 }
 
+function ChatPanel({ messages }: { messages: ChatMessage[] }) {
+  const colorByCharacter: Record<string, string> = {
+    aria: "#4cc9f0",
+    milo: "#f6a04d",
+    nora: "#f7d84a",
+  };
+
+  return (
+    <section
+      className="absolute right-3 top-3 z-[4] flex max-h-[34vh] w-[min(430px,calc(100vw-24px))] flex-col overflow-hidden rounded-md border border-[#0b1720]/55 bg-[#101820]/78 text-sm text-[#eef4ea] shadow-[0_12px_34px_rgba(5,12,16,0.26)] backdrop-blur"
+      aria-label="Character chat"
+    >
+      <div className="min-h-0 overflow-hidden px-3 py-2">
+        {messages.length === 0 ? (
+          <p className="text-[#cdd8c4]/70">...</p>
+        ) : (
+          <ol className="flex flex-col gap-0.5">
+            {messages.map((message) => (
+              <li key={message.id} className="min-w-0 leading-5">
+                <span
+                  className="font-semibold"
+                  style={{ color: colorByCharacter[message.fromCharacterId] ?? "#d9e4cd" }}
+                >
+                  {message.fromName}:
+                </span>{" "}
+                <span className="break-words text-[#f7fbf2]">{message.text}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function MovementRoute() {
   const gameRef = useRef<Phaser.Game | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const placeableSpritesRef = useRef<BakedPlaceableSprites | null>(null);
+  const worldModelRef = useRef<WorldModel | null>(null);
+  const brainControllerRef = useRef<ReturnType<typeof createAgentBrainController> | null>(null);
   const selectedAssetIdRef = useRef(placeableAssets[0]?.id ?? "");
-  const toolRef = useRef<EditorTool>("asset");
+  const toolRef = useRef<EditorTool>("explore");
   const rotationRef = useRef<TileRotation>(DEFAULT_TILE_ROTATION);
   const placedTilesRef = useRef<PlacedTile[]>([]);
   const commandSearchRef = useRef<HTMLInputElement | null>(null);
   const [placedTiles, setPlacedTiles] = useState<PlacedTile[]>(loadPlacedTiles);
   const [selectedAssetId, setSelectedAssetId] = useState(selectedAssetIdRef.current);
-  const [tool, setTool] = useState<EditorTool>("asset");
+  const [tool, setTool] = useState<EditorTool>("explore");
   const [rotation, setRotation] = useState<TileRotation>(DEFAULT_TILE_ROTATION);
   const [isBaking, setIsBaking] = useState(true);
   const [isCommandOpen, setIsCommandOpen] = useState(false);
   const [commandPage, setCommandPage] = useState<CommandPage>("root");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   const selectedAsset = placeableAssetsById.get(selectedAssetId) ?? placeableAssets[0];
   const assetsByPack = useMemo(() => {
@@ -277,20 +311,31 @@ function MovementRoute() {
     void Promise.all([
       ensurePlaceableSprites(store, Array.from(initialRequests.values())),
       Promise.all(
-        PLAYER_ROTATIONS.map(
-          async (rotation) => [rotation, await getPlaceableSprite(PLAYER_ASSET, rotation)] as const,
-        ),
+        CHARACTER_CONFIGS.map(async (character) => {
+          const sprites = await Promise.all(
+            PLAYER_ROTATIONS.map(
+              async (rotation) =>
+                [rotation, await getPlaceableSprite(character.asset, rotation)] as const,
+            ),
+          );
+          return {
+            id: character.id,
+            name: character.name,
+            sprites: new Map<TileRotation, BakedPlaceableSprite>(sprites),
+          };
+        }),
       ),
-    ]).then(([, playerSprites]) => {
+    ]).then(([, characters]) => {
       if (disposed) {
         return;
       }
 
+      setChatMessages([]);
       const game = new Phaser.Game(
         createMovementGameConfig(container, {
           placedTiles,
           placeableSprites: store,
-          playerSprites: new Map(playerSprites),
+          characters,
           getPlacementPreview: (col, row) => {
             if (toolRef.current === "remove") {
               const tile = tileAtCell(placedTilesRef.current, store, col, row);
@@ -299,10 +344,17 @@ function MovementRoute() {
               }
 
               return {
-                cells: footprintCells(tile.col, tile.row, getPlacedTileFootprint(tile, store)),
+                cells: footprintCells(
+                  { col: tile.col, row: tile.row },
+                  getPlacedTileFootprint(tile, store),
+                ),
                 isValid: true,
                 intent: "remove",
               };
+            }
+
+            if (toolRef.current !== "asset") {
+              return null;
             }
 
             const assetId = selectedAssetIdRef.current;
@@ -312,20 +364,29 @@ function MovementRoute() {
               return null;
             }
 
-            const cells = footprintCells(col, row, sprite.footprint);
+            const cells = footprintCells({ col, row }, sprite.footprint);
+            const textureKey = placeableSpriteKey(assetId, rotation);
             return {
               cells,
               isValid:
-                isInBounds(cells) &&
+                cellsAreInBounds(cells) &&
                 !placedTilesRef.current.some((tile) => intersectsPlacedTile(cells, tile, store)),
               intent: "place",
+              assetId,
+              rotation,
+              textureKey,
+              footprint: sprite.footprint,
             };
           },
           onCellClick: (col, row, action) => {
-            if (action === "erase" || toolRef.current === "remove") {
+            if (toolRef.current === "remove") {
               setPlacedTiles((current) =>
                 current.filter((tile) => !containsCell(tile, store, col, row)),
               );
+              return;
+            }
+
+            if (action === "erase" || toolRef.current !== "asset") {
               return;
             }
 
@@ -344,9 +405,9 @@ function MovementRoute() {
               store.sprites.set(placeableSpriteKey(assetId, rotation), sprite);
 
               setPlacedTiles((current) => {
-                const cells = footprintCells(col, row, sprite.footprint);
+                const cells = footprintCells({ col, row }, sprite.footprint);
                 if (
-                  !isInBounds(cells) ||
+                  !cellsAreInBounds(cells) ||
                   current.some((tile) => intersectsPlacedTile(cells, tile, store))
                 ) {
                   return current;
@@ -368,11 +429,40 @@ function MovementRoute() {
         }),
       );
       gameRef.current = game;
+      worldModelRef.current = buildWorldModel(placedTilesRef.current, store);
+      window.setTimeout(() => {
+        if (disposed) {
+          return;
+        }
+
+        const scene = game.scene.getScene("isometric-movement-scene") as
+          | IsometricMovementScene
+          | undefined;
+        const initialAgents = CHARACTER_CONFIGS.map((character) => ({
+          id: character.id,
+          name: character.name,
+          cell: scene?.getCharacterCell(character.id) ?? { col: 20, row: 20 },
+        }));
+        const brain = createAgentBrainController(initialAgents, {
+          getWorld: () => worldModelRef.current,
+          getCharacterCell: (id) => scene?.getCharacterCell(id) ?? null,
+          moveAlongPath: (id, path) =>
+            scene?.moveCharacterAlongPath(id, path) ??
+            Promise.resolve({ success: false, reason: "Movement scene is not ready." }),
+          onChatMessage: (message) => {
+            setChatMessages((current) => [...current.slice(-19), message]);
+          },
+        });
+        brainControllerRef.current = brain;
+        brain.start();
+      }, 0);
       setIsBaking(false);
     });
 
     return () => {
       disposed = true;
+      brainControllerRef.current?.dispose();
+      brainControllerRef.current = null;
       placeableSpritesRef.current = null;
       gameRef.current?.destroy(true);
       gameRef.current = null;
@@ -408,6 +498,7 @@ function MovementRoute() {
     savePlacedTiles(placedTiles);
 
     const game = gameRef.current;
+    const store = placeableSpritesRef.current;
     if (!game) {
       return;
     }
@@ -416,6 +507,10 @@ function MovementRoute() {
       | IsometricMovementScene
       | undefined;
     scene?.setPlacedTiles(placedTiles);
+    if (store) {
+      worldModelRef.current = buildWorldModel(placedTiles, store);
+      brainControllerRef.current?.notifyWorldChanged();
+    }
   }, [placedTiles]);
 
   useEffect(() => {
@@ -431,7 +526,7 @@ function MovementRoute() {
 
       if (commandModifier && key === "b") {
         event.preventDefault();
-        openCommand("assets");
+        togglePlaceMode();
         return;
       }
 
@@ -447,19 +542,23 @@ function MovementRoute() {
 
       if (key === "q") {
         event.preventDefault();
-        rotatePlacement(-1);
+        if (toolRef.current === "asset") {
+          rotatePlacement(-1);
+        }
         return;
       }
 
       if (key === "e") {
         event.preventDefault();
-        rotatePlacement(1);
+        if (toolRef.current === "asset") {
+          rotatePlacement(1);
+        }
       }
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isCommandOpen]);
+  }, [isCommandOpen, commandPage]);
 
   function selectAsset(assetId: string) {
     setSelectedAssetId(assetId);
@@ -476,17 +575,16 @@ function MovementRoute() {
     setIsCommandOpen(false);
   }
 
-  function setPlaceModeFromCommand() {
-    setTool("asset");
-    setIsCommandOpen(false);
-  }
-
   function toggleRemoveModeFromCommand() {
     toggleRemoveMode();
     setIsCommandOpen(false);
   }
 
   function rotatePlacementFromCommand(direction: 1 | -1) {
+    if (toolRef.current !== "asset") {
+      return;
+    }
+
     rotatePlacement(direction);
     setIsCommandOpen(false);
   }
@@ -496,7 +594,19 @@ function MovementRoute() {
   }
 
   function toggleRemoveMode() {
-    setTool((current) => (current === "remove" ? "asset" : "remove"));
+    setTool((current) => (current === "remove" ? "explore" : "remove"));
+  }
+
+  function togglePlaceMode() {
+    if (toolRef.current === "asset") {
+      setTool("explore");
+      setIsCommandOpen(false);
+      setCommandPage("root");
+      return;
+    }
+
+    setTool("asset");
+    openCommand("assets");
   }
 
   function openCommand(page: CommandPage) {
@@ -532,13 +642,14 @@ function MovementRoute() {
 
   return (
     <main className="relative h-full w-full overflow-hidden bg-[#9cb080]">
-      <span className="absolute bottom-3 right-3 z-[3] p-3 font-['Bytesized'] text-2xl text-[#273338] select-none">
+      <span className="absolute left-3 top-3 z-[3] p-3 font-['Bytesized'] text-2xl text-[#273338] select-none pointer-events-none">
         townbase
       </span>
       <div
         ref={containerRef}
         className="absolute inset-0 overflow-hidden cursor-crosshair [&_canvas]:block [&_canvas]:h-full [&_canvas]:w-full [&_canvas]:touch-none [&_canvas]:cursor-crosshair"
       />
+      <ChatPanel messages={chatMessages} />
       {isBaking ? (
         <div
           className="absolute inset-0 z-[1] grid place-items-center content-center gap-3 text-sm text-[#f7fbf2] pointer-events-none"
@@ -553,32 +664,15 @@ function MovementRoute() {
         </div>
       ) : null}
 
-      <div
-        className="absolute left-3 top-3 z-[3] flex max-w-[calc(100vw-24px)] flex-wrap items-center gap-2 rounded-md bg-[#273338]/92 px-3 py-2 text-xs text-[#eef4ea] shadow-[0_10px_24px_rgba(23,32,29,0.18)] backdrop-blur"
-        aria-label="Editor status"
-      >
-        <span className="font-semibold">{tool === "remove" ? "Remove mode" : "Place mode"}</span>
-        {tool === "asset" && selectedAsset ? (
-          <>
-            <span className="h-4 w-px bg-[#53635b]" aria-hidden="true" />
-            <span className="max-w-[42vw] truncate">{selectedAsset.label}</span>
-            <span className="h-4 w-px bg-[#53635b]" aria-hidden="true" />
-            <span>Facing {rotationLabel(rotation)}</span>
-          </>
-        ) : (
-          <span className="text-[#cdd8c4]">Click an occupied tile to remove it</span>
-        )}
-      </div>
-
       <div className="absolute bottom-3 left-3 z-[3] flex max-w-[calc(100vw-24px)] flex-wrap items-center gap-1.5 rounded-md bg-[#273338]/88 px-2.5 py-2 text-xs text-[#cdd8c4] shadow-[0_10px_24px_rgba(23,32,29,0.16)] backdrop-blur">
         <Shortcut>{navigator.platform.includes("Mac") ? "Cmd K" : "Ctrl K"}</Shortcut>
         <span>Commands</span>
         <Shortcut>{navigator.platform.includes("Mac") ? "Cmd B" : "Ctrl B"}</Shortcut>
-        <span>Assets Store</span>
+        <span>Place</span>
         <Shortcut>R</Shortcut>
         <span>Remove</span>
         <Shortcut>Q/E</Shortcut>
-        <span>Rotate</span>
+        <span>Rotate in Place</span>
       </div>
 
       <Command.Dialog
@@ -620,52 +714,49 @@ function MovementRoute() {
                 className="[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-[#96a79d]"
               >
                 <Command.Item
-                  value="open assets store"
-                  onSelect={() => setCommandPage("assets")}
+                  value="place mode assets store asset placement"
+                  onSelect={togglePlaceMode}
                   className={commandItem}
                 >
-                  <span>Open Assets Store</span>
+                  <span>{tool === "asset" ? "Exit Place mode" : "Place assets"}</span>
                   <span className={commandMeta}>
                     <Shortcut>{navigator.platform.includes("Mac") ? "Cmd B" : "Ctrl B"}</Shortcut>
                   </span>
-                </Command.Item>
-                <Command.Item
-                  value="place mode asset placement"
-                  onSelect={setPlaceModeFromCommand}
-                  className={commandItem}
-                >
-                  <span>Place mode</span>
                 </Command.Item>
                 <Command.Item
                   value="toggle remove mode delete asset erase"
                   onSelect={toggleRemoveModeFromCommand}
                   className={commandItem}
                 >
-                  <span>{tool === "remove" ? "Return to Place mode" : "Toggle Remove mode"}</span>
+                  <span>{tool === "remove" ? "Exit Remove mode" : "Toggle Remove mode"}</span>
                   <span className={commandMeta}>
                     <Shortcut>R</Shortcut>
                   </span>
                 </Command.Item>
-                <Command.Item
-                  value="rotate placement counterclockwise left"
-                  onSelect={() => rotatePlacementFromCommand(-1)}
-                  className={commandItem}
-                >
-                  <span>Rotate placement counterclockwise</span>
-                  <span className={commandMeta}>
-                    <Shortcut>Q</Shortcut>
-                  </span>
-                </Command.Item>
-                <Command.Item
-                  value="rotate placement clockwise right"
-                  onSelect={() => rotatePlacementFromCommand(1)}
-                  className={commandItem}
-                >
-                  <span>Rotate placement clockwise</span>
-                  <span className={commandMeta}>
-                    <Shortcut>E</Shortcut>
-                  </span>
-                </Command.Item>
+                {tool === "asset" ? (
+                  <>
+                    <Command.Item
+                      value="rotate placement counterclockwise left"
+                      onSelect={() => rotatePlacementFromCommand(-1)}
+                      className={commandItem}
+                    >
+                      <span>Rotate placement counterclockwise</span>
+                      <span className={commandMeta}>
+                        <Shortcut>Q</Shortcut>
+                      </span>
+                    </Command.Item>
+                    <Command.Item
+                      value="rotate placement clockwise right"
+                      onSelect={() => rotatePlacementFromCommand(1)}
+                      className={commandItem}
+                    >
+                      <span>Rotate placement clockwise</span>
+                      <span className={commandMeta}>
+                        <Shortcut>E</Shortcut>
+                      </span>
+                    </Command.Item>
+                  </>
+                ) : null}
                 <Command.Item
                   value="copy selected asset id slug"
                   onSelect={copySelectedAssetId}
