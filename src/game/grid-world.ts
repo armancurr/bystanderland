@@ -13,7 +13,7 @@ export type GridCell = {
 
 export type WorldPlace = {
   id: string;
-  kind: "home";
+  kind: "home_or_building" | "work_site" | "nature_spot" | "road_patrol";
   label: string;
   entryCell: GridCell;
   tileId?: string;
@@ -25,6 +25,7 @@ export type WorldModel = {
   blockedCellKeys: Set<string>;
   occupiedCellKeys: Set<string>;
   home: WorldPlace;
+  places: Record<WorldPlace["kind"], WorldPlace>;
 };
 
 export type ActionResult = { success: true; message?: string } | { success: false; reason: string };
@@ -177,36 +178,81 @@ function homeCandidate(placedTiles: PlacedTile[]) {
   );
 }
 
-function homeEntryCell(tile: PlacedTile, blocked: Set<string>) {
+function placeEntryCell(tile: PlacedTile, blocked: Set<string>) {
   const center = { col: tile.col, row: tile.row };
   const adjacent = adjacentCells(center).find((cell) => !blocked.has(cellKey(cell)));
   return adjacent ?? nearestWalkableCell(center, blocked);
+}
+
+function firstTileMatching(
+  placedTiles: PlacedTile[],
+  predicate: (asset: NonNullable<ReturnType<typeof placeableAssetsById.get>>) => boolean,
+) {
+  return placedTiles.find((tile) => {
+    const asset = placeableAssetsById.get(tile.assetId);
+    return asset ? predicate(asset) : false;
+  });
+}
+
+function fallbackOpenEdgeCell(blocked: Set<string>) {
+  const candidates: GridCell[] = [
+    { col: 4, row: 4 },
+    { col: GRID_COLS - 5, row: 4 },
+    { col: 4, row: GRID_ROWS - 5 },
+    { col: GRID_COLS - 5, row: GRID_ROWS - 5 },
+  ];
+  return candidates.find((cell) => !blocked.has(cellKey(cell))) ?? nearestWalkableCell(candidates[0], blocked);
+}
+
+function worldPlace(
+  kind: WorldPlace["kind"],
+  label: string,
+  tile: PlacedTile | undefined,
+  fallback: GridCell,
+  blocked: Set<string>,
+): WorldPlace {
+  if (!tile) {
+    return {
+      id: kind,
+      kind,
+      label: `Fallback ${label}`,
+      entryCell: nearestWalkableCell(fallback, blocked),
+    };
+  }
+
+  return {
+    id: kind,
+    kind,
+    label: placeableAssetsById.get(tile.assetId)?.label ?? label,
+    entryCell: placeEntryCell(tile, blocked),
+    tileId: tile.id,
+  };
 }
 
 export function buildWorldModel(placedTiles: PlacedTile[], sprites: BakedPlaceableSprites) {
   const blocked = blockedMovementCellKeys(placedTiles, sprites);
   const homeTile = homeCandidate(placedTiles);
   const fallbackHome = nearestWalkableCell(PLAYER_START_CELL, blocked);
+  const workTile = firstTileMatching(
+    placedTiles,
+    (asset) => asset.category === "building" && (asset.pack === "commercial" || asset.pack === "industrial"),
+  );
+  const natureTile = firstTileMatching(placedTiles, (asset) => asset.category === "nature");
+  const roadTile = firstTileMatching(placedTiles, (asset) => asset.category === "road");
+  const places: WorldModel["places"] = {
+    home_or_building: worldPlace("home_or_building", "home", homeTile, fallbackHome, blocked),
+    work_site: worldPlace("work_site", "work site", workTile, { col: 20, row: 20 }, blocked),
+    nature_spot: worldPlace("nature_spot", "nature spot", natureTile, fallbackOpenEdgeCell(blocked), blocked),
+    road_patrol: worldPlace("road_patrol", "road patrol", roadTile, { col: 21, row: 20 }, blocked),
+  };
 
   return {
     cols: GRID_COLS,
     rows: GRID_ROWS,
     blockedCellKeys: blocked,
     occupiedCellKeys: occupiedCellKeys(placedTiles, sprites),
-    home: homeTile
-      ? {
-          id: "player-home",
-          kind: "home",
-          label: placeableAssetsById.get(homeTile.assetId)?.label ?? "Home",
-          entryCell: homeEntryCell(homeTile, blocked),
-          tileId: homeTile.id,
-        }
-      : {
-          id: "player-home",
-          kind: "home",
-          label: "Fallback home",
-          entryCell: fallbackHome,
-        },
+    home: places.home_or_building,
+    places,
   } satisfies WorldModel;
 }
 

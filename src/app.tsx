@@ -1,17 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { Command } from "cmdk";
 import Phaser from "phaser";
+import { api } from "../convex/_generated/api";
+import type { Doc, Id } from "../convex/_generated/dataModel";
 import {
   buildWorldModel,
   cellsAreInBounds,
-  containsCell,
+  findGridPath,
   footprintCells,
   getPlacedTileFootprint,
   intersectsPlacedTile,
   tileAtCell,
+  type GridCell,
   type WorldModel,
 } from "./game/grid-world";
-import { createAgentBrainController, type ChatMessage } from "./game/agent-brain";
 import { IsometricMovementScene } from "./game/isometric-movement-scene";
 import { createMovementGameConfig } from "./game/movement-game-config";
 import { createSpriteStore, ensurePlaceableSprites, getPlaceableSprite } from "./game/sprite-cache";
@@ -26,8 +29,22 @@ import {
 } from "./game/placed-assets";
 
 const PLACED_TILES_STORAGE_KEY = "bystanderland:placed-tiles:v1";
+const LOCAL_IMPORT_DONE_KEY = "townbase:convex-imported-local-tiles:v1";
 const DEFAULT_TILE_ROTATION: TileRotation = 180;
 const PLAYER_ROTATIONS: TileRotation[] = [0, 90, 180, 270];
+
+type EditorTool = "explore" | "asset" | "remove";
+type CommandPage = "root" | "assets";
+type PlaceKind = Doc<"tiles">["placeKind"];
+type SimulationMode = Doc<"worlds">["mode"];
+type TownState = {
+  world: Doc<"worlds">;
+  tiles: Doc<"tiles">[];
+  places: Doc<"places">[];
+  characters: Doc<"characters">[];
+  actions: Doc<"agentActions">[];
+  chatMessages: Doc<"chatMessages">[];
+};
 
 type CharacterConfig = {
   id: string;
@@ -38,7 +55,7 @@ type CharacterConfig = {
 const CHARACTER_CONFIGS: CharacterConfig[] = [
   {
     id: "aria",
-    name: "Aria",
+    name: "01",
     asset: {
       id: "characters:character-a",
       label: "Character A",
@@ -56,7 +73,7 @@ const CHARACTER_CONFIGS: CharacterConfig[] = [
   },
   {
     id: "milo",
-    name: "Milo",
+    name: "02",
     asset: {
       id: "characters:character-b",
       label: "Character B",
@@ -74,7 +91,7 @@ const CHARACTER_CONFIGS: CharacterConfig[] = [
   },
   {
     id: "nora",
-    name: "Nora",
+    name: "03",
     asset: {
       id: "characters:character-c",
       label: "Character C",
@@ -92,14 +109,22 @@ const CHARACTER_CONFIGS: CharacterConfig[] = [
   },
 ];
 
-type EditorTool = "explore" | "asset" | "remove";
-type CommandPage = "root" | "assets";
+const placeKindOptions: PlaceKind[] = [
+  "home",
+  "market",
+  "diner",
+  "school",
+  "work",
+  "nature",
+  "road",
+  "building",
+];
 
 function isTileRotation(value: unknown): value is TileRotation {
   return value === 0 || value === 90 || value === 180 || value === 270;
 }
 
-function loadPlacedTiles() {
+function loadLocalPlacedTiles() {
   const raw = window.localStorage.getItem(PLACED_TILES_STORAGE_KEY);
   if (!raw) {
     return [];
@@ -115,23 +140,15 @@ function loadPlacedTiles() {
       if (!tile || typeof tile !== "object") {
         return false;
       }
-
       const candidate = tile as Partial<PlacedTile>;
-      const col = candidate.col;
-      const row = candidate.row;
-
       return (
         typeof candidate.id === "string" &&
         typeof candidate.assetId === "string" &&
         placeableAssetsById.has(candidate.assetId) &&
-        typeof col === "number" &&
-        Number.isInteger(col) &&
-        typeof row === "number" &&
-        Number.isInteger(row) &&
-        col >= 0 &&
-        col < 40 &&
-        row >= 0 &&
-        row < 40 &&
+        typeof candidate.col === "number" &&
+        Number.isInteger(candidate.col) &&
+        typeof candidate.row === "number" &&
+        Number.isInteger(candidate.row) &&
         isTileRotation(candidate.rotation)
       );
     });
@@ -140,8 +157,37 @@ function loadPlacedTiles() {
   }
 }
 
-function savePlacedTiles(tiles: PlacedTile[]) {
-  window.localStorage.setItem(PLACED_TILES_STORAGE_KEY, JSON.stringify(tiles));
+function labelFromAssetId(assetId: string) {
+  return (
+    assetId
+      .split(":")
+      .pop()
+      ?.replace(/[_-]/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase()) ?? assetId
+  );
+}
+
+function placeKindFromAsset(asset: PlaceableAsset): PlaceKind {
+  if (asset.category === "road") {
+    return "road";
+  }
+  if (asset.category === "nature") {
+    return "nature";
+  }
+  if (asset.pack === "commercial" || asset.pack === "industrial") {
+    return "work";
+  }
+  return "building";
+}
+
+function convexTileToPlacedTile(tile: Doc<"tiles">): PlacedTile {
+  return {
+    id: tile.stableId,
+    assetId: tile.assetId,
+    col: tile.col,
+    row: tile.row,
+    rotation: tile.rotation,
+  };
 }
 
 function SpinnerIcon() {
@@ -163,7 +209,6 @@ function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
-
   return Boolean(
     target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']"),
   );
@@ -183,7 +228,7 @@ function Shortcut({ children }: { children: string }) {
   );
 }
 
-function ChatPanel({ messages }: { messages: ChatMessage[] }) {
+function ChatPanel({ messages }: { messages: Doc<"chatMessages">[] }) {
   const colorByCharacter: Record<string, string> = {
     aria: "#4cc9f0",
     milo: "#f6a04d",
@@ -192,7 +237,7 @@ function ChatPanel({ messages }: { messages: ChatMessage[] }) {
 
   return (
     <section
-      className="absolute right-3 top-3 z-[4] flex max-h-[34vh] w-[min(430px,calc(100vw-24px))] flex-col overflow-hidden rounded-md border border-[#0b1720]/55 bg-[#101820]/78 text-sm text-[#eef4ea] shadow-[0_12px_34px_rgba(5,12,16,0.26)] backdrop-blur"
+      className="absolute right-3 top-3 z-[4] flex max-h-[34vh] w-[min(360px,calc(100vw-24px))] flex-col overflow-hidden rounded-md border border-[#0b1720]/55 bg-[#101820]/78 font-['Geist_Mono'] text-xs text-[#eef4ea] shadow-[0_12px_34px_rgba(5,12,16,0.26)] backdrop-blur"
       aria-label="Character chat"
     >
       <div className="min-h-0 overflow-hidden px-3 py-2">
@@ -201,12 +246,12 @@ function ChatPanel({ messages }: { messages: ChatMessage[] }) {
         ) : (
           <ol className="flex flex-col gap-0.5">
             {messages.map((message) => (
-              <li key={message.id} className="min-w-0 leading-5">
+              <li key={message._id} className="min-w-0 leading-5">
                 <span
                   className="font-semibold"
-                  style={{ color: colorByCharacter[message.fromCharacterId] ?? "#d9e4cd" }}
+                  style={{ color: colorByCharacter[message.characterId] ?? "#d9e4cd" }}
                 >
-                  {message.fromName}:
+                  {message.label}:
                 </span>{" "}
                 <span className="break-words text-[#f7fbf2]">{message.text}</span>
               </li>
@@ -218,27 +263,191 @@ function ChatPanel({ messages }: { messages: ChatMessage[] }) {
   );
 }
 
+function ModePanel({
+  mode,
+  onSetMode,
+  onRunPopulationStep,
+  isRunning,
+}: {
+  mode: SimulationMode;
+  onSetMode: (mode: SimulationMode) => void;
+  onRunPopulationStep: () => void;
+  isRunning: boolean;
+}) {
+  return (
+    <div className="absolute left-3 top-16 z-[4] flex items-center gap-1.5 rounded-md bg-[#273338]/88 px-2.5 py-2 text-xs text-[#eef4ea] shadow-[0_10px_24px_rgba(23,32,29,0.16)] backdrop-blur">
+      <button
+        type="button"
+        onClick={() => onSetMode("auto")}
+        className={`rounded px-2 py-1 ${mode === "auto" ? "bg-[#d9e4cd] text-[#17201d]" : "bg-[#17201d] text-[#cdd8c4]"}`}
+      >
+        Auto
+      </button>
+      <button
+        type="button"
+        onClick={() => onSetMode("mock_manual")}
+        className={`rounded px-2 py-1 ${mode === "mock_manual" ? "bg-[#d9e4cd] text-[#17201d]" : "bg-[#17201d] text-[#cdd8c4]"}`}
+      >
+        Mock Manual
+      </button>
+      <button
+        type="button"
+        disabled={isRunning || mode !== "auto"}
+        onClick={onRunPopulationStep}
+        className="rounded bg-[#f2b84b] px-2 py-1 text-[#17201d] disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        {isRunning ? "Running..." : "Run Step"}
+      </button>
+    </div>
+  );
+}
+
+function MetadataPanel({
+  tile,
+  characters,
+  onSave,
+}: {
+  tile: Doc<"tiles"> | undefined;
+  characters: Doc<"characters">[];
+  onSave: (
+    stableId: string,
+    label: string,
+    placeKind: PlaceKind,
+    ownerCharacterId: string | null,
+  ) => void;
+}) {
+  const [label, setLabel] = useState("");
+  const [placeKind, setPlaceKind] = useState<PlaceKind>("building");
+  const [ownerCharacterId, setOwnerCharacterId] = useState<string>("");
+
+  useEffect(() => {
+    if (!tile) {
+      return;
+    }
+    setLabel(tile.label);
+    setPlaceKind(tile.placeKind);
+    setOwnerCharacterId(tile.ownerCharacterId ?? "");
+  }, [tile]);
+
+  if (!tile) {
+    return null;
+  }
+
+  return (
+    <form
+      className="absolute bottom-16 right-3 z-[4] flex w-[min(330px,calc(100vw-24px))] flex-col gap-2 rounded-md bg-[#273338]/92 p-3 text-xs text-[#eef4ea] shadow-[0_10px_24px_rgba(23,32,29,0.2)] backdrop-blur"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave(tile.stableId, label, placeKind, ownerCharacterId || null);
+      }}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-semibold">Place metadata</span>
+        <span className="truncate text-[#cdd8c4]/75">{tile.assetId}</span>
+      </div>
+      <input
+        value={label}
+        onChange={(event) => setLabel(event.target.value)}
+        className="h-9 rounded border border-[#53635b] bg-[#17201d] px-2 text-[#eef4ea] outline-none"
+        aria-label="Place label"
+      />
+      <div className="grid grid-cols-2 gap-2">
+        <select
+          value={placeKind}
+          onChange={(event) => setPlaceKind(event.target.value as PlaceKind)}
+          className="h-9 rounded border border-[#53635b] bg-[#17201d] px-2 text-[#eef4ea] outline-none"
+          aria-label="Place kind"
+        >
+          {placeKindOptions.map((kind) => (
+            <option key={kind} value={kind}>
+              {kind}
+            </option>
+          ))}
+        </select>
+        <select
+          value={ownerCharacterId}
+          onChange={(event) => setOwnerCharacterId(event.target.value)}
+          className="h-9 rounded border border-[#53635b] bg-[#17201d] px-2 text-[#eef4ea] outline-none"
+          aria-label="Owner character"
+        >
+          <option value="">No owner</option>
+          {characters.map((character) => (
+            <option key={character.characterId} value={character.characterId}>
+              {character.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <button type="submit" className="h-9 rounded bg-[#d9e4cd] px-3 text-[#17201d]">
+        Save
+      </button>
+    </form>
+  );
+}
+
 function MovementRoute() {
+  const state = useQuery(api.town.getState) as TownState | null | undefined;
+  const ensureWorld = useMutation(api.town.ensureWorld);
+  const importLocalTiles = useMutation(api.town.importLocalTiles);
+  const setMode = useMutation(api.town.setMode);
+  const upsertTile = useMutation(api.town.upsertTile);
+  const deleteTile = useMutation(api.town.deleteTile);
+  const updateTileMetadata = useMutation(api.town.updateTileMetadata);
+  const enqueueAction = useMutation(api.town.enqueueAction);
+  const setActionStatus = useMutation(api.town.setActionStatus);
+  const runPopulationStep = useAction(api.agents.runPopulationStep);
+
   const gameRef = useRef<Phaser.Game | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const placeableSpritesRef = useRef<BakedPlaceableSprites | null>(null);
   const worldModelRef = useRef<WorldModel | null>(null);
-  const brainControllerRef = useRef<ReturnType<typeof createAgentBrainController> | null>(null);
   const selectedAssetIdRef = useRef(placeableAssets[0]?.id ?? "");
   const toolRef = useRef<EditorTool>("explore");
   const rotationRef = useRef<TileRotation>(DEFAULT_TILE_ROTATION);
   const placedTilesRef = useRef<PlacedTile[]>([]);
   const commandSearchRef = useRef<HTMLInputElement | null>(null);
-  const [placedTiles, setPlacedTiles] = useState<PlacedTile[]>(loadPlacedTiles);
+  const runningActionsRef = useRef(new Set<string>());
   const [selectedAssetId, setSelectedAssetId] = useState(selectedAssetIdRef.current);
   const [tool, setTool] = useState<EditorTool>("explore");
   const [rotation, setRotation] = useState<TileRotation>(DEFAULT_TILE_ROTATION);
   const [isBaking, setIsBaking] = useState(true);
   const [isCommandOpen, setIsCommandOpen] = useState(false);
   const [commandPage, setCommandPage] = useState<CommandPage>("root");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [selectedTileStableId, setSelectedTileStableId] = useState<string | null>(null);
+  const [isRunningLlm, setIsRunningLlm] = useState(false);
 
+  const convexTiles = state?.tiles ?? [];
+  const placedTiles = useMemo(() => convexTiles.map(convexTileToPlacedTile), [convexTiles]);
+  const characters = state?.characters ?? [];
+  const places = state?.places ?? [];
+  const mode = state?.world.mode ?? "auto";
   const selectedAsset = placeableAssetsById.get(selectedAssetId) ?? placeableAssets[0];
+  const selectedTile = convexTiles.find((tile) => tile.stableId === selectedTileStableId);
+
+  useEffect(() => {
+    void ensureWorld();
+  }, [ensureWorld]);
+
+  useEffect(() => {
+    if (state === undefined || !state?.world || state.world.importedLocalStorage) {
+      return;
+    }
+    if (window.localStorage.getItem(LOCAL_IMPORT_DONE_KEY)) {
+      return;
+    }
+
+    const localTiles = loadLocalPlacedTiles();
+    window.localStorage.setItem(LOCAL_IMPORT_DONE_KEY, "1");
+    void importLocalTiles({
+      tiles: localTiles.map((tile) => ({
+        stableId: tile.id,
+        assetId: tile.assetId,
+        col: tile.col,
+        row: tile.row,
+        rotation: tile.rotation,
+      })),
+    });
+  }, [importLocalTiles, state]);
 
   useEffect(() => {
     selectedAssetIdRef.current = selectedAssetId;
@@ -258,7 +467,7 @@ function MovementRoute() {
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) {
+    if (!container || state === undefined || !state || gameRef.current) {
       return;
     }
 
@@ -288,31 +497,34 @@ function MovementRoute() {
                 [rotation, await getPlaceableSprite(character.asset, rotation)] as const,
             ),
           );
+          const savedCharacter = characters.find(
+            (candidate: Doc<"characters">) => candidate.characterId === character.id,
+          );
           return {
             id: character.id,
             name: character.name,
+            cell: savedCharacter?.cell ?? { col: 20, row: 20 },
             sprites: new Map<TileRotation, BakedPlaceableSprite>(sprites),
           };
         }),
       ),
-    ]).then(([, characters]) => {
+    ]).then(([, sceneCharacters]) => {
       if (disposed) {
         return;
       }
 
-      setChatMessages([]);
       const game = new Phaser.Game(
         createMovementGameConfig(container, {
           placedTiles,
           placeableSprites: store,
-          characters,
+          characters: sceneCharacters,
+          allowKeyboardMovement: mode === "mock_manual",
           getPlacementPreview: (col, row) => {
             if (toolRef.current === "remove") {
               const tile = tileAtCell(placedTilesRef.current, store, col, row);
               if (!tile) {
                 return { cells: [{ col, row }], isValid: false, intent: "remove" };
               }
-
               return {
                 cells: footprintCells(
                   { col: tile.col, row: tile.row },
@@ -328,14 +540,13 @@ function MovementRoute() {
             }
 
             const assetId = selectedAssetIdRef.current;
-            const rotation = rotationRef.current;
-            const sprite = store.sprites.get(placeableSpriteKey(assetId, rotation));
+            const selectedRotation = rotationRef.current;
+            const sprite = store.sprites.get(placeableSpriteKey(assetId, selectedRotation));
             if (!sprite) {
               return null;
             }
 
             const cells = footprintCells({ col, row }, sprite.footprint);
-            const textureKey = placeableSpriteKey(assetId, rotation);
             return {
               cells,
               isValid:
@@ -343,20 +554,27 @@ function MovementRoute() {
                 !placedTilesRef.current.some((tile) => intersectsPlacedTile(cells, tile, store)),
               intent: "place",
               assetId,
-              rotation,
-              textureKey,
+              rotation: selectedRotation,
+              textureKey: placeableSpriteKey(assetId, selectedRotation),
               footprint: sprite.footprint,
             };
           },
           onCellClick: (col, row, action) => {
+            const clickedTile = tileAtCell(placedTilesRef.current, store, col, row);
             if (toolRef.current === "remove") {
-              setPlacedTiles((current) =>
-                current.filter((tile) => !containsCell(tile, store, col, row)),
-              );
+              if (clickedTile) {
+                void deleteTile({ stableId: clickedTile.id });
+                setSelectedTileStableId(null);
+              }
               return;
             }
 
-            if (action === "erase" || toolRef.current !== "asset") {
+            if (action === "erase") {
+              return;
+            }
+
+            if (toolRef.current !== "asset") {
+              setSelectedTileStableId(clickedTile?.id ?? null);
               return;
             }
 
@@ -366,78 +584,68 @@ function MovementRoute() {
               return;
             }
 
-            const rotation = rotationRef.current;
-            void getPlaceableSprite(asset, rotation).then((sprite) => {
+            const selectedRotation = rotationRef.current;
+            void getPlaceableSprite(asset, selectedRotation).then((sprite) => {
               if (disposed) {
                 return;
               }
 
-              store.sprites.set(placeableSpriteKey(assetId, rotation), sprite);
+              store.sprites.set(placeableSpriteKey(assetId, selectedRotation), sprite);
+              const cells = footprintCells({ col, row }, sprite.footprint);
+              if (
+                !cellsAreInBounds(cells) ||
+                placedTilesRef.current.some((tile) => intersectsPlacedTile(cells, tile, store))
+              ) {
+                return;
+              }
 
-              setPlacedTiles((current) => {
-                const cells = footprintCells({ col, row }, sprite.footprint);
-                if (
-                  !cellsAreInBounds(cells) ||
-                  current.some((tile) => intersectsPlacedTile(cells, tile, store))
-                ) {
-                  return current;
-                }
-
-                return [
-                  ...current,
-                  {
-                    id: `tile:${col}:${row}`,
-                    assetId,
-                    col,
-                    row,
-                    rotation,
-                  },
-                ];
+              const stableId = `tile:${col}:${row}`;
+              void upsertTile({
+                tile: {
+                  stableId,
+                  assetId,
+                  col,
+                  row,
+                  rotation: selectedRotation,
+                  label: labelFromAssetId(assetId),
+                  placeKind: placeKindFromAsset(asset),
+                  ownerCharacterId: null,
+                },
               });
+              setSelectedTileStableId(stableId);
             });
           },
         }),
       );
       gameRef.current = game;
       worldModelRef.current = buildWorldModel(placedTilesRef.current, store);
-      window.setTimeout(() => {
-        if (disposed) {
-          return;
-        }
-
-        const scene = game.scene.getScene("isometric-movement-scene") as
-          | IsometricMovementScene
-          | undefined;
-        const initialAgents = CHARACTER_CONFIGS.map((character) => ({
-          id: character.id,
-          name: character.name,
-          cell: scene?.getCharacterCell(character.id) ?? { col: 20, row: 20 },
-        }));
-        const brain = createAgentBrainController(initialAgents, {
-          getWorld: () => worldModelRef.current,
-          getCharacterCell: (id) => scene?.getCharacterCell(id) ?? null,
-          moveAlongPath: (id, path) =>
-            scene?.moveCharacterAlongPath(id, path) ??
-            Promise.resolve({ success: false, reason: "Movement scene is not ready." }),
-          onChatMessage: (message) => {
-            setChatMessages((current) => [...current.slice(-19), message]);
-          },
-        });
-        brainControllerRef.current = brain;
-        brain.start();
-      }, 0);
       setIsBaking(false);
     });
 
     return () => {
       disposed = true;
-      brainControllerRef.current?.dispose();
-      brainControllerRef.current = null;
       placeableSpritesRef.current = null;
       gameRef.current?.destroy(true);
       gameRef.current = null;
     };
-  }, []);
+  }, [deleteTile, characters, mode, placedTiles, state, upsertTile]);
+
+  useEffect(() => {
+    const store = placeableSpritesRef.current;
+    const game = gameRef.current;
+    if (!store || !game) {
+      return;
+    }
+
+    const scene = game.scene.getScene("isometric-movement-scene") as
+      | IsometricMovementScene
+      | undefined;
+    scene?.setPlacedTiles(placedTiles);
+    scene?.setCharacterCells(
+      Object.fromEntries(characters.map((character) => [character.characterId, character.cell])),
+    );
+    worldModelRef.current = buildWorldModel(placedTiles, store);
+  }, [characters, placedTiles]);
 
   useEffect(() => {
     const store = placeableSpritesRef.current;
@@ -452,36 +660,15 @@ function MovementRoute() {
       if (cancelled) {
         return;
       }
-
       store.sprites.set(placeableSpriteKey(asset.id, rotation), sprite);
       refreshPlacementPreview();
     });
-
     refreshPlacementPreview();
 
     return () => {
       cancelled = true;
     };
   }, [selectedAssetId, rotation, tool]);
-
-  useEffect(() => {
-    savePlacedTiles(placedTiles);
-
-    const game = gameRef.current;
-    const store = placeableSpritesRef.current;
-    if (!game) {
-      return;
-    }
-
-    const scene = game.scene.getScene("isometric-movement-scene") as
-      | IsometricMovementScene
-      | undefined;
-    scene?.setPlacedTiles(placedTiles);
-    if (store) {
-      worldModelRef.current = buildWorldModel(placedTiles, store);
-      brainControllerRef.current?.notifyWorldChanged();
-    }
-  }, [placedTiles]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -493,23 +680,19 @@ function MovementRoute() {
         openCommand("root");
         return;
       }
-
       if (commandModifier && key === "b") {
         event.preventDefault();
         togglePlaceMode();
         return;
       }
-
       if (isCommandOpen || isEditableTarget(event.target)) {
         return;
       }
-
       if (key === "r") {
         event.preventDefault();
         toggleRemoveMode();
         return;
       }
-
       if (key === "q") {
         event.preventDefault();
         if (toolRef.current === "asset") {
@@ -517,7 +700,6 @@ function MovementRoute() {
         }
         return;
       }
-
       if (key === "e") {
         event.preventDefault();
         if (toolRef.current === "asset") {
@@ -530,6 +712,97 @@ function MovementRoute() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isCommandOpen, commandPage]);
 
+  useEffect(() => {
+    if (!state) {
+      return;
+    }
+
+    const pending = state.actions.filter((action) => action.status === "pending");
+    for (const action of pending) {
+      if (runningActionsRef.current.has(action._id)) {
+        continue;
+      }
+      runningActionsRef.current.add(action._id);
+      void executeAction(action).finally(() => {
+        runningActionsRef.current.delete(action._id);
+      });
+    }
+  }, [state]);
+
+  async function executeAction(action: Doc<"agentActions">) {
+    const game = gameRef.current;
+    const scene = game?.scene.getScene("isometric-movement-scene") as
+      | IsometricMovementScene
+      | undefined;
+    const world = worldModelRef.current;
+    if (!scene || !world) {
+      await setActionStatus({
+        actionId: action._id as Id<"agentActions">,
+        status: "failed",
+        result: "Movement scene is not ready.",
+        characterCell: null,
+      });
+      return;
+    }
+
+    await setActionStatus({
+      actionId: action._id as Id<"agentActions">,
+      status: "running",
+      result: null,
+      characterCell: null,
+    });
+
+    const startCell = scene.getCharacterCell(action.characterId);
+    if (!startCell) {
+      await setActionStatus({
+        actionId: action._id as Id<"agentActions">,
+        status: "failed",
+        result: "Character is not ready.",
+        characterCell: null,
+      });
+      return;
+    }
+
+    let targetCell: GridCell | null = null;
+    if (action.actionId === "move_to_place" || action.actionId === "inspect_place") {
+      const place = places.find((candidate) => candidate.stableId === action.targetPlaceStableId);
+      targetCell = place?.entryCell ?? null;
+    } else if (action.actionId === "move_to_cell") {
+      targetCell = action.targetCell;
+    }
+
+    if (targetCell) {
+      const path = await findGridPath(startCell, targetCell, world);
+      if (!path || path.length === 0) {
+        await setActionStatus({
+          actionId: action._id as Id<"agentActions">,
+          status: "failed",
+          result: "No path to target.",
+          characterCell: startCell,
+        });
+        return;
+      }
+      const result = await scene.moveCharacterAlongPath(action.characterId, path);
+      const cell = scene.getCharacterCell(action.characterId) ?? startCell;
+      await setActionStatus({
+        actionId: action._id as Id<"agentActions">,
+        status: result.success ? "completed" : "failed",
+        result: result.success ? (action.reason || (result.message ?? "Done.")) : result.reason,
+        characterCell: cell,
+      });
+      return;
+    }
+
+    window.setTimeout(() => {
+      void setActionStatus({
+        actionId: action._id as Id<"agentActions">,
+        status: "completed",
+        result: action.reason || "Done.",
+        characterCell: startCell,
+      });
+    }, action.actionId === "wait" ? 700 : 250);
+  }
+
   function selectAsset(assetId: string) {
     setSelectedAssetId(assetId);
     setTool("asset");
@@ -540,13 +813,7 @@ function MovementRoute() {
     if (!selectedAsset) {
       return;
     }
-
     void navigator.clipboard?.writeText(selectedAsset.id);
-    setIsCommandOpen(false);
-  }
-
-  function toggleRemoveModeFromCommand() {
-    toggleRemoveMode();
     setIsCommandOpen(false);
   }
 
@@ -554,7 +821,6 @@ function MovementRoute() {
     if (toolRef.current !== "asset") {
       return;
     }
-
     rotatePlacement(direction);
     setIsCommandOpen(false);
   }
@@ -567,6 +833,11 @@ function MovementRoute() {
     setTool((current) => (current === "remove" ? "explore" : "remove"));
   }
 
+  function toggleRemoveModeFromCommand() {
+    toggleRemoveMode();
+    setIsCommandOpen(false);
+  }
+
   function togglePlaceMode() {
     if (toolRef.current === "asset") {
       setTool("explore");
@@ -574,7 +845,6 @@ function MovementRoute() {
       setCommandPage("root");
       return;
     }
-
     setTool("asset");
     openCommand("assets");
   }
@@ -585,25 +855,35 @@ function MovementRoute() {
     window.setTimeout(() => commandSearchRef.current?.focus(), 0);
   }
 
-  /*
-   * Clear map is intentionally hidden because it wipes all persisted local
-   * storage state. Keep this here until a safer reset flow exists.
-   *
-   * function clearMap() {
-   *   setPlacedTiles([]);
-   * }
-   */
-
   function refreshPlacementPreview() {
     const game = gameRef.current;
     if (!game) {
       return;
     }
-
     const scene = game.scene.getScene("isometric-movement-scene") as
       | IsometricMovementScene
       | undefined;
     scene?.refreshPlacementPreview();
+  }
+
+  async function runMockStep() {
+    const character = characters[0];
+    const target =
+      places.find((place: Doc<"places">) => place.stableId === character?.homePlaceStableId) ??
+      places[0];
+    if (!character || !target) {
+      return;
+    }
+    await enqueueAction({
+      characterId: character.characterId,
+      source: "mock",
+      actionId: "move_to_place",
+      targetPlaceStableId: target.stableId,
+      targetCell: null,
+      message: null,
+      task: "mock_visit_home",
+      reason: `Mock step toward ${target.label}.`,
+    });
   }
 
   const commandItem =
@@ -621,8 +901,35 @@ function MovementRoute() {
         ref={containerRef}
         className="absolute inset-0 overflow-hidden cursor-crosshair [&_canvas]:block [&_canvas]:h-full [&_canvas]:w-full [&_canvas]:touch-none [&_canvas]:cursor-crosshair"
       />
-      <ChatPanel messages={chatMessages} />
-      {isBaking ? (
+      <ChatPanel messages={state?.chatMessages ?? []} />
+      {state?.world ? (
+        <ModePanel
+          mode={mode}
+          onSetMode={(nextMode) => void setMode({ mode: nextMode })}
+          isRunning={isRunningLlm}
+          onRunPopulationStep={() => {
+            if (mode === "mock_manual") {
+              void runMockStep();
+              return;
+            }
+            setIsRunningLlm(true);
+            void runPopulationStep().finally(() => setIsRunningLlm(false));
+          }}
+        />
+      ) : null}
+      <MetadataPanel
+        tile={selectedTile}
+        characters={characters}
+        onSave={(stableId, label, kind, owner) =>
+          void updateTileMetadata({
+            stableId,
+            label,
+            placeKind: kind,
+            ownerCharacterId: owner,
+          })
+        }
+      />
+      {isBaking || state === undefined ? (
         <div
           className="absolute inset-0 z-[1] grid place-items-center content-center gap-3 text-sm text-[#f7fbf2] pointer-events-none"
           role="status"
@@ -682,69 +989,78 @@ function MovementRoute() {
           </Command.Empty>
 
           {commandPage === "root" ? (
-            <>
-              <Command.Group
-                heading="Actions"
-                className="[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-[#96a79d]"
+            <Command.Group
+              heading="Actions"
+              className="[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-[#96a79d]"
+            >
+              <Command.Item
+                value="place mode assets store asset placement"
+                onSelect={togglePlaceMode}
+                className={commandItem}
               >
-                <Command.Item
-                  value="place mode assets store asset placement"
-                  onSelect={togglePlaceMode}
-                  className={commandItem}
-                >
-                  <span>{tool === "asset" ? "Exit Place mode" : "Place assets"}</span>
-                  <span className={commandMeta}>
-                    <Shortcut>{navigator.platform.includes("Mac") ? "Cmd B" : "Ctrl B"}</Shortcut>
-                  </span>
-                </Command.Item>
-                <Command.Item
-                  value="toggle remove mode delete asset erase"
-                  onSelect={toggleRemoveModeFromCommand}
-                  className={commandItem}
-                >
-                  <span>{tool === "remove" ? "Exit Remove mode" : "Toggle Remove mode"}</span>
-                  <span className={commandMeta}>
-                    <Shortcut>R</Shortcut>
-                  </span>
-                </Command.Item>
-                {tool === "asset" ? (
-                  <>
-                    <Command.Item
-                      value="rotate placement counterclockwise left"
-                      onSelect={() => rotatePlacementFromCommand(-1)}
-                      className={commandItem}
-                    >
-                      <span>Rotate placement counterclockwise</span>
-                      <span className={commandMeta}>
-                        <Shortcut>Q</Shortcut>
-                      </span>
-                    </Command.Item>
-                    <Command.Item
-                      value="rotate placement clockwise right"
-                      onSelect={() => rotatePlacementFromCommand(1)}
-                      className={commandItem}
-                    >
-                      <span>Rotate placement clockwise</span>
-                      <span className={commandMeta}>
-                        <Shortcut>E</Shortcut>
-                      </span>
-                    </Command.Item>
-                  </>
-                ) : null}
-                <Command.Item
-                  value="copy selected asset id slug"
-                  onSelect={copySelectedAssetId}
-                  className={commandItem}
-                >
-                  <span>Copy selected asset id</span>
-                  {selectedAsset ? (
-                    <span className="ml-auto max-w-[42%] truncate text-xs opacity-80">
-                      {selectedAsset.id}
+                <span>{tool === "asset" ? "Exit Place mode" : "Place assets"}</span>
+                <span className={commandMeta}>
+                  <Shortcut>{navigator.platform.includes("Mac") ? "Cmd B" : "Ctrl B"}</Shortcut>
+                </span>
+              </Command.Item>
+              <Command.Item
+                value="toggle remove mode delete asset erase"
+                onSelect={toggleRemoveModeFromCommand}
+                className={commandItem}
+              >
+                <span>{tool === "remove" ? "Exit Remove mode" : "Toggle Remove mode"}</span>
+                <span className={commandMeta}>
+                  <Shortcut>R</Shortcut>
+                </span>
+              </Command.Item>
+              <Command.Item
+                value="run population auto llm step"
+                onSelect={() => {
+                  setIsCommandOpen(false);
+                  setIsRunningLlm(true);
+                  void runPopulationStep().finally(() => setIsRunningLlm(false));
+                }}
+                className={commandItem}
+              >
+                <span>Run LLM population step</span>
+              </Command.Item>
+              {tool === "asset" ? (
+                <>
+                  <Command.Item
+                    value="rotate placement counterclockwise left"
+                    onSelect={() => rotatePlacementFromCommand(-1)}
+                    className={commandItem}
+                  >
+                    <span>Rotate placement counterclockwise</span>
+                    <span className={commandMeta}>
+                      <Shortcut>Q</Shortcut>
                     </span>
-                  ) : null}
-                </Command.Item>
-              </Command.Group>
-            </>
+                  </Command.Item>
+                  <Command.Item
+                    value="rotate placement clockwise right"
+                    onSelect={() => rotatePlacementFromCommand(1)}
+                    className={commandItem}
+                  >
+                    <span>Rotate placement clockwise</span>
+                    <span className={commandMeta}>
+                      <Shortcut>E</Shortcut>
+                    </span>
+                  </Command.Item>
+                </>
+              ) : null}
+              <Command.Item
+                value="copy selected asset id slug"
+                onSelect={copySelectedAssetId}
+                className={commandItem}
+              >
+                <span>Copy selected asset id</span>
+                {selectedAsset ? (
+                  <span className="ml-auto max-w-[42%] truncate text-xs opacity-80">
+                    {selectedAsset.id}
+                  </span>
+                ) : null}
+              </Command.Item>
+            </Command.Group>
           ) : (
             <Command.Group className="[&_[cmdk-group-items]]:grid [&_[cmdk-group-items]]:grid-cols-4 [&_[cmdk-group-items]]:gap-2">
               {placeableAssets.map((asset) => (

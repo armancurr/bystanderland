@@ -25,8 +25,10 @@ export type MovementSceneData = {
   characters: Array<{
     id: string;
     name: string;
+    cell: { col: number; row: number };
     sprites: Map<TileRotation, BakedPlaceableSprite>;
   }>;
+  allowKeyboardMovement: boolean;
   onCellClick: (col: number, row: number, action: CellClickAction) => void;
   getPlacementPreview: (col: number, row: number) => PlacementPreview | null;
 };

@@ -16,6 +16,9 @@ export type CharacterAgentState = {
   activity: CharacterActivity;
   conversationId: string | null;
   lastSpokeAt: number;
+  chatCooldownUntil: number;
+  currentTask: AgentTask | null;
+  nextTaskAt: number;
 };
 
 export type ChatMessage = {
@@ -32,16 +35,29 @@ export type ConversationState = {
   participantIds: string[];
   speakerIndex: number;
   turnCount: number;
+  maxTurns: number;
   lastMessageAt: number;
 };
 
 export type AgentActionId =
+  | "visit_place"
+  | "inspect_place"
+  | "patrol_area"
+  | "meet_character"
   | "wander"
   | "move_to_cell"
-  | "move_near_character"
   | "say"
   | "wait"
   | "leave_conversation";
+
+export type AgentTaskId = AgentActionId;
+
+export type AgentTask = {
+  taskId: AgentTaskId;
+  target: GridCell | null;
+  status: "active" | "pausing" | "complete";
+  startedAt: number;
+};
 
 export type AgentDecision = {
   actionId: AgentActionId;
@@ -63,17 +79,19 @@ const THINK_INTERVAL_MS = 2200;
 const WAIT_MS = 900;
 const WANDER_RADIUS = 7;
 const TALK_DISTANCE = 3;
-const MAX_CONVERSATION_TURNS = 8;
-const CONVERSATION_IDLE_MS = 12000;
+const CONVERSATION_IDLE_MS = 6500;
 const SPEAK_COOLDOWN_MS = 1600;
+const MIN_CHAT_COOLDOWN_MS = 20000;
+const MAX_CHAT_COOLDOWN_MS = 40000;
+const TASK_PAUSE_MS = 1600;
 
 const conversationLines = [
-  "Hey @all, what are you looking at?",
-  "@all I am going to wander around.",
-  "This place is starting to feel busy.",
-  "@all Let's stay close for a bit.",
-  "I found a clear path over here.",
-  "@all I will keep moving soon.",
+  "Checking this spot.",
+  "Passing through.",
+  "Looks clear.",
+  "I will keep moving.",
+  "Noted.",
+  "On my route.",
 ];
 
 function sameCell(a: GridCell, b: GridCell) {
@@ -117,6 +135,50 @@ function randomItem<T>(items: T[]) {
   return items[Math.floor(Math.random() * items.length)];
 }
 
+function chatCooldownMs() {
+  return (
+    MIN_CHAT_COOLDOWN_MS + Math.floor(Math.random() * (MAX_CHAT_COOLDOWN_MS - MIN_CHAT_COOLDOWN_MS))
+  );
+}
+
+function conversationTurnLimit() {
+  return 1 + Math.floor(Math.random() * 3);
+}
+
+function differentCell(a: GridCell | null | undefined, b: GridCell | null | undefined) {
+  return !a || !b || !sameCell(a, b);
+}
+
+function taskTarget(taskId: AgentTaskId, agent: CharacterAgentState, world: WorldModel) {
+  if (taskId === "visit_place") {
+    return world.places.home_or_building.entryCell;
+  }
+
+  if (taskId === "inspect_place") {
+    return world.places.nature_spot.entryCell;
+  }
+
+  if (taskId === "patrol_area") {
+    return (world.places.road_patrol.tileId ? world.places.road_patrol : world.places.work_site)
+      .entryCell;
+  }
+
+  if (taskId === "wander") {
+    return randomItem(wanderCandidates(agent.cell, world)) ?? agent.cell;
+  }
+
+  return null;
+}
+
+function makeTask(taskId: AgentTaskId, agent: CharacterAgentState, world: WorldModel): AgentTask {
+  return {
+    taskId,
+    target: taskTarget(taskId, agent, world),
+    status: "active",
+    startedAt: Date.now(),
+  };
+}
+
 function messageTarget(text: string, agents: CharacterAgentState[]): "all" | string[] {
   if (text.includes("@all")) {
     return "all";
@@ -140,6 +202,9 @@ export function createAgentBrainController(
         activity: "idle",
         conversationId: null,
         lastSpokeAt: 0,
+        chatCooldownUntil: Date.now() + chatCooldownMs(),
+        currentTask: null,
+        nextTaskAt: 0,
       },
     ]),
   );
@@ -182,20 +247,47 @@ export function createAgentBrainController(
     );
   }
 
+  function conversationInRange(conversation: ConversationState) {
+    const participants = conversation.participantIds
+      .map((id) => agents.get(id))
+      .filter((agent): agent is CharacterAgentState => Boolean(agent));
+
+    return participants.every((agent, index) =>
+      participants.every(
+        (other, otherIndex) =>
+          index === otherIndex || manhattanDistance(agent.cell, other.cell) <= TALK_DISTANCE,
+      ),
+    );
+  }
+
+  function endConversation(conversation: ConversationState) {
+    const now = Date.now();
+    for (const participantId of conversation.participantIds) {
+      const participant = agents.get(participantId);
+      if (participant?.conversationId === conversation.id) {
+        participant.conversationId = null;
+        participant.activity = "idle";
+        participant.chatCooldownUntil = now + chatCooldownMs();
+      }
+    }
+    conversations.delete(conversation.id);
+  }
+
   function expireOldConversations(now: number) {
     for (const conversation of conversations.values()) {
-      if (
-        now - conversation.lastMessageAt > CONVERSATION_IDLE_MS ||
-        conversation.turnCount >= MAX_CONVERSATION_TURNS
-      ) {
-        for (const participantId of conversation.participantIds) {
-          const participant = agents.get(participantId);
-          if (participant?.conversationId === conversation.id) {
-            participant.conversationId = null;
-            participant.activity = "idle";
-          }
+      for (const participantId of conversation.participantIds) {
+        const participant = agents.get(participantId);
+        if (participant) {
+          syncAgentCell(participant);
         }
-        conversations.delete(conversation.id);
+      }
+
+      if (
+        !conversationInRange(conversation) ||
+        now - conversation.lastMessageAt > CONVERSATION_IDLE_MS ||
+        conversation.turnCount >= conversation.maxTurns
+      ) {
+        endConversation(conversation);
       }
     }
   }
@@ -219,6 +311,7 @@ export function createAgentBrainController(
       participantIds: participants.map((agent) => agent.id),
       speakerIndex: conversationSeq % participants.length,
       turnCount: 0,
+      maxTurns: conversationTurnLimit(),
       lastMessageAt: Date.now(),
     };
     conversationSeq += 1;
@@ -284,6 +377,7 @@ export function createAgentBrainController(
 
       agent.activity = "talking";
       agent.lastSpokeAt = Date.now();
+      agent.chatCooldownUntil = agent.lastSpokeAt + chatCooldownMs();
       options.onChatMessage({
         id: `message:${messageSeq}`,
         fromCharacterId: agent.id,
@@ -299,27 +393,26 @@ export function createAgentBrainController(
     }
 
     if (decision.actionId === "leave_conversation") {
-      agent.conversationId = null;
+      const conversation = activeConversationFor(agent);
+      if (conversation) {
+        endConversation(conversation);
+      } else {
+        agent.conversationId = null;
+        agent.chatCooldownUntil = Date.now() + chatCooldownMs();
+      }
       agent.activity = "idle";
       return { success: true, message: "Left conversation." } satisfies ActionResult;
     }
 
-    if (decision.actionId === "move_to_cell" && decision.targetCell) {
+    if (
+      (decision.actionId === "move_to_cell" ||
+        decision.actionId === "visit_place" ||
+        decision.actionId === "inspect_place" ||
+        decision.actionId === "patrol_area" ||
+        decision.actionId === "meet_character") &&
+      decision.targetCell
+    ) {
       return runMovement(agent, decision.targetCell);
-    }
-
-    if (decision.actionId === "move_near_character" && decision.targetCharacterId) {
-      const target = agents.get(decision.targetCharacterId);
-      if (!target) {
-        return { success: false, reason: "Target character not found." } satisfies ActionResult;
-      }
-
-      syncAgentCell(target);
-      const targetCell = randomItem(nearbyCells(target.cell, TALK_DISTANCE, world));
-      if (!targetCell) {
-        return { success: false, reason: "No nearby walkable cell." } satisfies ActionResult;
-      }
-      return runMovement(agent, targetCell);
     }
 
     if (decision.actionId === "wander") {
@@ -338,6 +431,10 @@ export function createAgentBrainController(
     const now = Date.now();
     const conversation = activeConversationFor(agent);
     if (conversation) {
+      if (!conversationInRange(conversation)) {
+        return { actionId: "leave_conversation", reason: "Conversation participants moved apart." };
+      }
+
       const speaker = nextSpeaker(conversation);
       if (speaker?.id !== agent.id || now - agent.lastSpokeAt < SPEAK_COOLDOWN_MS) {
         return { actionId: "wait", reason: "Waiting for conversation turn." };
@@ -353,30 +450,65 @@ export function createAgentBrainController(
     }
 
     const nearby = nearbyAgents(agent);
-    if (nearby.length > 0 && Math.random() < 0.65) {
-      startConversation([agent, ...nearby]);
+    if (
+      nearby.length > 0 &&
+      now >= agent.chatCooldownUntil &&
+      nearby.every((other) => now >= other.chatCooldownUntil) &&
+      Math.random() < 0.08
+    ) {
+      startConversation([agent, nearby[0]]);
       return {
         actionId: "say",
         reason: "Starting nearby conversation.",
-        message: `@all Hey, I see ${nearby.map((other) => other.name).join(" and ")} nearby.`,
+        message: conversationLines[Math.floor(Math.random() * conversationLines.length)],
         target: "all",
       };
     }
 
-    if (nearby.length === 0 && Math.random() < 0.25) {
-      const target = randomItem(agentList().filter((other) => other.id !== agent.id));
-      if (target) {
-        return {
-          actionId: "move_near_character",
-          reason: "Looking for someone to talk to.",
-          targetCharacterId: target.id,
-        };
-      }
+    const world = options.getWorld();
+    if (!world) {
+      return { actionId: "wait", reason: "World unavailable." };
     }
 
-    return Math.random() < 0.75
-      ? { actionId: "wander", reason: "Exploring nearby cells." }
-      : { actionId: "wait", reason: "Idling." };
+    if (!agent.currentTask || agent.currentTask.status === "complete") {
+      if (now < agent.nextTaskAt) {
+        return { actionId: "wait", reason: "Brief pause before next task." };
+      }
+      agent.currentTask = makeTask(nextTaskId(agent), agent, world);
+    } else if (differentCell(agent.currentTask.target, taskTarget(agent.currentTask.taskId, agent, world))) {
+      agent.currentTask = makeTask(agent.currentTask.taskId, agent, world);
+    }
+
+    const task = agent.currentTask;
+    if (!task.target) {
+      task.status = "complete";
+      agent.nextTaskAt = now + TASK_PAUSE_MS;
+      return { actionId: "wait", reason: "Task has no target." };
+    }
+
+    if (!sameCell(agent.cell, task.target)) {
+      return {
+        actionId: task.taskId,
+        reason: `Working on ${task.taskId}.`,
+        targetCell: task.target,
+      };
+    }
+
+    task.status = "complete";
+    agent.nextTaskAt = now + TASK_PAUSE_MS + Math.floor(Math.random() * 1600);
+    return { actionId: "wait", reason: "Pausing at task target." };
+  }
+
+  function nextTaskId(agent: CharacterAgentState): AgentTaskId {
+    const sequence: AgentTaskId[] =
+      agent.name === "01"
+        ? ["patrol_area", "inspect_place", "wander", "visit_place"]
+        : agent.name === "02"
+          ? ["inspect_place", "visit_place", "patrol_area", "wander"]
+          : ["visit_place", "patrol_area", "inspect_place", "wander"];
+    const previous = agent.currentTask?.taskId;
+    const start = previous ? sequence.indexOf(previous) + 1 : 0;
+    return sequence[start % sequence.length];
   }
 
   async function tick(agentId: string) {
@@ -410,7 +542,11 @@ export function createAgentBrainController(
   }
 
   function start() {
+    const world = options.getWorld();
     for (const agent of agents.values()) {
+      if (world) {
+        agent.currentTask = makeTask(nextTaskId(agent), agent, world);
+      }
       schedule(agent.id, 300 + Math.floor(Math.random() * 900));
     }
   }

@@ -124,6 +124,19 @@ export class IsometricMovementScene extends Phaser.Scene {
     return character ? { ...character.cell } : null;
   }
 
+  setCharacterCells(cells: Record<string, GridCell>) {
+    for (const [id, cell] of Object.entries(cells)) {
+      const character = this.characters.get(id);
+      if (!character || character.tween?.isPlaying()) {
+        continue;
+      }
+      character.cell = { ...cell };
+      const position = this.gridToScreen(cell.col, cell.row);
+      character.sprite.setPosition(position.x, position.y);
+      this.updateCharacterDepth(character);
+    }
+  }
+
   isCharacterMoving(id: string) {
     return Boolean(this.characters.get(id)?.tween?.isPlaying());
   }
@@ -200,6 +213,11 @@ export class IsometricMovementScene extends Phaser.Scene {
   }
 
   private createKeyboardControls() {
+    const data = this.registry.get("movementSceneData") as MovementSceneData | undefined;
+    if (!data?.allowKeyboardMovement) {
+      return;
+    }
+
     this.input.keyboard?.on("keydown", (event: KeyboardEvent) => {
       if (event.repeat) {
         return;
@@ -447,7 +465,7 @@ export class IsometricMovementScene extends Phaser.Scene {
         return;
       }
 
-      const cell = this.firstAvailableCharacterCell(data, index, reserved);
+      const cell = this.firstAvailableCharacterCell(data, index, reserved, characterConfig.cell);
       reserved.add(cellKey(cell));
       const position = this.gridToScreen(cell.col, cell.row);
       const scale = (TILE_WIDTH / data.placeableSprites.diamondPx) * PLAYER_SCALE;
@@ -474,8 +492,18 @@ export class IsometricMovementScene extends Phaser.Scene {
     data: MovementSceneData,
     index: number,
     reserved: Set<string>,
+    configuredCell?: GridCell,
   ) {
     const blocked = this.blockedMovementCellKeys(data);
+    if (
+      configuredCell &&
+      this.isInBounds(configuredCell.col, configuredCell.row) &&
+      !blocked.has(cellKey(configuredCell)) &&
+      !reserved.has(cellKey(configuredCell))
+    ) {
+      return { ...configuredCell };
+    }
+
     const preferred = {
       col: PLAYER_START_CELL.col + index - 1,
       row: PLAYER_START_CELL.row + Math.abs(index - 1),
