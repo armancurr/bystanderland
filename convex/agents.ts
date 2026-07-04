@@ -88,7 +88,8 @@ function fallbackMoveDecision(context: TurnContext): z.infer<typeof decisionSche
   const differentPlace = context.places.find(
     (place) => distance(place.entryCell, context.character.cell) > 0,
   );
-  const target = home && distance(home.entryCell, context.character.cell) > 0 ? home : differentPlace;
+  const target =
+    home && distance(home.entryCell, context.character.cell) > 0 ? home : differentPlace;
 
   if (target) {
     return {
@@ -306,7 +307,8 @@ async function runAgentTurnHelper(ctx: ActionCtx, characterId: string): Promise<
     prompt: JSON.stringify(context, null, 2),
   });
 
-  const decision = selectedDecision ?? (await enqueueDecision(ctx, characterId, fallbackMoveDecision(context)));
+  const decision =
+    selectedDecision ?? (await enqueueDecision(ctx, characterId, fallbackMoveDecision(context)));
   const firstToolCall = result.toolCalls[0];
   const firstToolResult = result.toolResults[0];
 

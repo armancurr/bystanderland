@@ -45,6 +45,16 @@ type TownState = {
   actions: Doc<"agentActions">[];
   chatMessages: Doc<"chatMessages">[];
 };
+type ToolTestStep = {
+  characterId: string;
+  toolName: string;
+  task: string;
+  message?: string;
+};
+type ToolTestStatus = {
+  tone: "idle" | "running" | "success" | "error";
+  text: string;
+};
 
 type CharacterConfig = {
   id: string;
@@ -409,6 +419,87 @@ function ModePanel({
   );
 }
 
+function ToolTestPanel({
+  plan,
+  stepIndex,
+  status,
+  isRunning,
+  mode,
+  onRunStep,
+  onReset,
+}: {
+  plan: ToolTestStep[];
+  stepIndex: number;
+  status: ToolTestStatus;
+  isRunning: boolean;
+  mode: SimulationMode;
+  onRunStep: () => void;
+  onReset: () => void;
+}) {
+  const step = plan[stepIndex];
+  const isComplete = plan.length > 0 && stepIndex >= plan.length;
+  const progress =
+    plan.length === 0 ? "0 / 0" : `${Math.min(stepIndex + 1, plan.length)} / ${plan.length}`;
+  const disabled = isRunning || mode !== "auto" || plan.length === 0 || isComplete;
+  const statusClass =
+    status.tone === "error"
+      ? "text-[#ffd0c9]"
+      : status.tone === "success"
+        ? "text-[#d9e4cd]"
+        : status.tone === "running"
+          ? "text-[#ffe2a3]"
+          : "text-[#cdd8c4]/75";
+
+  return (
+    <section
+      className="absolute right-3 top-[calc(34vh+24px)] z-[4] flex w-[min(360px,calc(100vw-24px))] flex-col gap-2 rounded-md border border-[#0b1720]/55 bg-[#101820]/82 px-3 py-2 font-['Geist_Mono'] text-xs text-[#eef4ea] shadow-[0_12px_34px_rgba(5,12,16,0.26)] backdrop-blur"
+      aria-label="Tool test runner"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <strong>Tool Test</strong>
+        <span className="text-[#cdd8c4]/70">{progress}</span>
+      </div>
+      <div className="min-h-[3.75rem] rounded bg-[#17201d]/80 p-2 leading-5">
+        {isComplete ? (
+          <div className="text-[#d9e4cd]">All tool test steps completed.</div>
+        ) : step ? (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate font-semibold text-[#f7fbf2]">{step.characterId}</span>
+              <span className="rounded bg-[#273338] px-1.5 py-0.5 text-[#cdd8c4]">
+                {step.toolName}
+              </span>
+            </div>
+            <div className="truncate text-[#cdd8c4]">{step.task}</div>
+            {step.message ? <div className="break-words text-[#f7fbf2]">{step.message}</div> : null}
+          </>
+        ) : (
+          <div className="text-[#cdd8c4]/70">No test plan loaded.</div>
+        )}
+      </div>
+      <div className={statusClass}>{status.text}</div>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onRunStep}
+          className="rounded bg-[#f2b84b] px-2 py-1 text-[#17201d] disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {isRunning ? "Running..." : "Run Test Step"}
+        </button>
+        <button
+          type="button"
+          disabled={isRunning || stepIndex === 0}
+          onClick={onReset}
+          className="rounded bg-[#17201d] px-2 py-1 text-[#cdd8c4] disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Reset
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function MetadataPanel({
   tile,
   characters,
@@ -502,6 +593,7 @@ function MovementRoute() {
   const updateTileMetadata = useMutation(api.town.updateTileMetadata);
   const enqueueAction = useMutation(api.town.enqueueAction);
   const setActionStatus = useMutation(api.town.setActionStatus);
+  const runAgentTurn = useAction(api.agents.runAgentTurn);
   const runPopulationStep = useAction(api.agents.runPopulationStep);
 
   const gameRef = useRef<Phaser.Game | null>(null);
@@ -523,6 +615,11 @@ function MovementRoute() {
   const [commandPage, setCommandPage] = useState<CommandPage>("root");
   const [selectedTileStableId, setSelectedTileStableId] = useState<string | null>(null);
   const [isRunningLlm, setIsRunningLlm] = useState(false);
+  const [toolTestStepIndex, setToolTestStepIndex] = useState(0);
+  const [toolTestStatus, setToolTestStatus] = useState<ToolTestStatus>({
+    tone: "idle",
+    text: "Ready to run the next tool test step.",
+  });
 
   const convexTiles = state?.tiles ?? [];
   const placedTiles = useMemo(() => convexTiles.map(convexTileToPlacedTile), [convexTiles]);
@@ -532,6 +629,15 @@ function MovementRoute() {
   const isWorldReady = state !== undefined && state !== null;
   const selectedAsset = placeableAssetsById.get(selectedAssetId) ?? placeableAssets[0];
   const selectedTile = convexTiles.find((tile) => tile.stableId === selectedTileStableId);
+  const toolTestPlan = useMemo<ToolTestStep[]>(
+    () =>
+      characters.map((character) => ({
+        characterId: character.characterId,
+        toolName: "required agent tool",
+        task: `Run one agent turn for ${character.label}.`,
+      })),
+    [characters],
+  );
 
   useEffect(() => {
     void ensureWorld();
@@ -1057,6 +1163,41 @@ function MovementRoute() {
     }
   }
 
+  async function handleRunToolTestStep() {
+    const step = toolTestPlan[toolTestStepIndex];
+    if (!step || mode !== "auto") {
+      return;
+    }
+
+    setIsRunningLlm(true);
+    setToolTestStatus({ tone: "running", text: `Running ${step.characterId} tool call...` });
+    try {
+      const result = await runAgentTurn({ characterId: step.characterId });
+      if (!result.ok) {
+        setToolTestStatus({
+          tone: "error",
+          text: result.reason ?? `${step.characterId} did not complete a tool call.`,
+        });
+        return;
+      }
+      setToolTestStatus({
+        tone: "success",
+        text: `${step.characterId} called ${result.toolName ?? "a fallback tool"}.`,
+      });
+      setToolTestStepIndex((current) => current + 1);
+    } catch (error) {
+      console.error("Tool test step failed:", error);
+      setToolTestStatus({ tone: "error", text: "Tool test step failed. See console for details." });
+    } finally {
+      setIsRunningLlm(false);
+    }
+  }
+
+  function resetToolTest() {
+    setToolTestStepIndex(0);
+    setToolTestStatus({ tone: "idle", text: "Ready to run the next tool test step." });
+  }
+
   const commandItem =
     "flex min-h-11 cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-sm text-[#eef4ea] outline-none aria-selected:bg-[#d9e4cd] aria-selected:text-[#17201d] data-[selected=true]:bg-[#d9e4cd] data-[selected=true]:text-[#17201d]";
   const commandAssetItem =
@@ -1073,17 +1214,24 @@ function MovementRoute() {
         className="absolute inset-0 overflow-hidden cursor-crosshair [&_canvas]:block [&_canvas]:h-full [&_canvas]:w-full [&_canvas]:touch-none [&_canvas]:cursor-crosshair"
       />
       <ChatPanel messages={state?.chatMessages ?? []} />
-      <AgentLogPanel
-        actions={state?.actions ?? []}
-        characters={characters}
-        places={places}
-      />
+      <AgentLogPanel actions={state?.actions ?? []} characters={characters} places={places} />
       {state?.world ? (
         <ModePanel
           mode={mode}
           onSetMode={(nextMode) => void setMode({ mode: nextMode })}
           isRunning={isRunningLlm}
           onRunPopulationStep={() => void handleRunPopulationStep()}
+        />
+      ) : null}
+      {state?.world ? (
+        <ToolTestPanel
+          plan={toolTestPlan}
+          stepIndex={toolTestStepIndex}
+          status={toolTestStatus}
+          isRunning={isRunningLlm}
+          mode={mode}
+          onRunStep={() => void handleRunToolTestStep()}
+          onReset={resetToolTest}
         />
       ) : null}
       <MetadataPanel
