@@ -1,13 +1,8 @@
-Install dependencies and run the Vite dev server with Bun or pnpm:
+Install dependencies and run the Vite dev server with Bun:
 
 ```bash
 bun install
 bun run dev
-```
-
-```bash
-pnpm install
-pnpm run dev
 ```
 
 The frontend requires `VITE_CONVEX_URL`. Run Convex separately with `bunx convex dev` or provide an existing Convex deployment URL.
@@ -55,11 +50,6 @@ The package exposes a `townbase` binary that serves the built `dist` app:
 ```bash
 bun run build
 bunx --bun ./bin/townbase.js --port 3000
-```
-
-```bash
-pnpm run build
-pnpm exec townbase --port 3000
 ```
 
 After publishing the package to npm, users can run:
