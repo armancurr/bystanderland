@@ -865,7 +865,7 @@ export class IsometricMovementScene extends Phaser.Scene {
 		data: MovementSceneData,
 		preview: ReturnType<MovementSceneData["getPlacementPreview"]>,
 	) {
-		if (!preview || preview.intent !== "place" || !preview.textureKey) {
+		if (preview?.intent !== "place" || !preview.textureKey) {
 			this.clearPlacementPreviewAsset();
 			return;
 		}

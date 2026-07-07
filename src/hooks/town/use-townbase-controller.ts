@@ -12,7 +12,7 @@ import {
 	intersectsPlacedTile,
 	tileAtCell,
 } from "../../game/grid-world";
-import { IsometricMovementScene } from "../../game/isometric-movement-scene";
+import type { IsometricMovementScene } from "../../game/isometric-movement-scene";
 import { createMovementGameConfig } from "../../game/movement-game-config";
 import {
 	placeableAssets,

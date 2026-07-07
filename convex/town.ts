@@ -51,9 +51,7 @@ const tileInput = v.object({
 });
 
 function labelFromAssetId(assetId: string) {
-	return assetId
-		.split(":")
-		.pop()!
+	return (assetId.split(":").pop() ?? assetId)
 		.replace(/[_-]/g, " ")
 		.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
@@ -97,7 +95,10 @@ async function ensureDefaultWorld(ctx: MutationCtx) {
 		importedLocalStorage: false,
 		updatedAt: timestamp,
 	});
-	const world = (await ctx.db.get(worldId))!;
+	const world = await ctx.db.get(worldId);
+	if (!world) {
+		throw new Error("Failed to create default world");
+	}
 
 	for (const seed of characterSeeds) {
 		await ctx.db.insert("characters", {

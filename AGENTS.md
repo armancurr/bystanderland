@@ -1,23 +1,20 @@
 Use Bun.
 Do not run the dev server.
-After each run, update topic-based files in `docs/memory/` — don't create a new file per run.
+Update these files in `docs/memory/` after each run - never create new ones. Only add game logic/design intent a future agent would otherwise miss or guess wrong (coordinate systems, simulation rules, state ownership, non-obvious "why"). Skip build tooling, lint/CI/Docker/package config - that's visible in the files themselves.
 
-- `architecture.md` — structural decisions + why
-- `gotchas.md` — bugs, quirks, silent failures
-- `conventions.md` — naming/style patterns
-- `todo-followups.md` — noticed but unaddressed
+- `game.md` — world model + systems: coordinates, grid/iso math, tick order, state ownership, mechanic design intent
+- `gotchas.md` — non-obvious game-logic bugs/behavior (not infra)
+- `open.md` — noticed but unaddressed issues
 
-Check for an existing entry first; update/append instead of duplicating.
+Check for an existing entry before adding; update in place, don't duplicate.
 
-Entry format:
+Format:
+## [YYYY-MM-DD] Title
+- Why/non-obvious: 1-2 lines
+- Files: paths
+- Status: resolved/open
 
-## [YYYY-MM-DD] Short title
-
-- Learned: 1-2 lines
-- Files: paths touched
-- Status: resolved / open
-
-One idea per entry. If a file exceeds ~300 lines, move old/resolved entries to a matching `archive.md`.
+One idea per entry. Past ~300 lines, move resolved entries to `archive.md`.
 
 <!-- convex-ai-start -->
 
