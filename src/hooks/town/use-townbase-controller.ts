@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import Phaser from "phaser";
 import { api } from "../../../convex/_generated/api";
@@ -90,7 +90,10 @@ export function useTownbaseController() {
 	const rotationRef = useRef<TileRotation>(DEFAULT_TILE_ROTATION);
 	const placedTilesRef = useRef<PlacedTile[]>([]);
 	const modeRef = useRef<SimulationMode>("auto");
-	const runningActionsRef = useRef(new Set<string>());
+	const runningActionsRef = useRef<Set<string> | null>(null);
+	if (runningActionsRef.current === null) {
+		runningActionsRef.current = new Set<string>();
+	}
 	const [selectedAssetId, setSelectedAssetId] = useState(
 		selectedAssetIdRef.current,
 	);
@@ -109,12 +112,12 @@ export function useTownbaseController() {
 		text: "Ready to run the next tool test step.",
 	});
 
-	const convexTiles = state?.tiles ?? [];
+	const convexTiles = useMemo(() => state?.tiles ?? [], [state?.tiles]);
 	const placedTiles = useMemo(
 		() => convexTiles.map(convexTileToPlacedTile),
 		[convexTiles],
 	);
-	const characters = state?.characters ?? [];
+	const characters = useMemo(() => state?.characters ?? [], [state?.characters]);
 	const places = state?.places ?? [];
 	const mode = state?.world.mode ?? "auto";
 	const isWorldReady = state !== undefined && state !== null;
@@ -368,7 +371,7 @@ export function useTownbaseController() {
 			gameRef.current?.destroy(true);
 			gameRef.current = null;
 		};
-	}, [deleteTile, isWorldReady, upsertTile]);
+	}, [characters, deleteTile, isWorldReady, placedTiles, upsertTile]);
 
 	useEffect(() => {
 		const store = placeableSpritesRef.current;
@@ -461,6 +464,12 @@ export function useTownbaseController() {
 		return () => window.removeEventListener("keydown", handleKeyDown);
 	}, []);
 
+	const executePendingAction = useEffectEvent(
+		async (action: Doc<"agentActions">) => {
+			await executeAction(action);
+		},
+	);
+
 	useEffect(() => {
 		if (!state) {
 			return;
@@ -469,13 +478,18 @@ export function useTownbaseController() {
 		const pending = state.actions.filter(
 			(action) => action.status === "pending",
 		);
+		const runningActions = runningActionsRef.current;
+		if (!runningActions) {
+			return;
+		}
+
 		for (const action of pending) {
-			if (runningActionsRef.current.has(action._id)) {
+			if (runningActions.has(action._id)) {
 				continue;
 			}
-			runningActionsRef.current.add(action._id);
-			void executeAction(action).finally(() => {
-				runningActionsRef.current.delete(action._id);
+			runningActions.add(action._id);
+			void executePendingAction(action).finally(() => {
+				runningActions.delete(action._id);
 			});
 		}
 	}, [state]);

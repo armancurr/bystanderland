@@ -369,11 +369,13 @@ export const runPopulationStep = action({
 			return { ok: false, reason: "World is not ready." };
 		}
 
-		const results: Array<AgentTurnResult & { characterId: string }> = [];
-		for (const character of state.characters) {
-			const result = await runAgentTurnHelper(ctx, character.characterId);
-			results.push({ characterId: character.characterId, ...result });
-		}
+		const results: Array<AgentTurnResult & { characterId: string }> =
+			await Promise.all(
+				state.characters.map(async (character) => ({
+					characterId: character.characterId,
+					...(await runAgentTurnHelper(ctx, character.characterId)),
+				})),
+			);
 		const okCount = results.filter((result) => result.ok).length;
 		return {
 			ok: okCount > 0,

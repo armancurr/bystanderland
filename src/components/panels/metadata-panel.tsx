@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import type { Doc } from "../../../convex/_generated/dataModel";
 import type { PlaceKind } from "../../types";
 
@@ -29,19 +28,6 @@ export function MetadataPanel({
 	characters,
 	onSave,
 }: MetadataPanelProps) {
-	const [label, setLabel] = useState("");
-	const [placeKind, setPlaceKind] = useState<PlaceKind>("building");
-	const [ownerCharacterId, setOwnerCharacterId] = useState<string>("");
-
-	useEffect(() => {
-		if (!tile) {
-			return;
-		}
-		setLabel(tile.label);
-		setPlaceKind(tile.placeKind);
-		setOwnerCharacterId(tile.ownerCharacterId ?? "");
-	}, [tile]);
-
 	if (!tile) {
 		return (
 			<section className="mt-3 rounded-md bg-[#17201d]/72 p-3 text-xs text-[#cdd8c4]/70">
@@ -51,11 +37,32 @@ export function MetadataPanel({
 	}
 
 	return (
+		<MetadataForm
+			key={tile._id}
+			tile={tile}
+			characters={characters}
+			onSave={onSave}
+		/>
+	);
+}
+
+type MetadataFormProps = Omit<MetadataPanelProps, "tile"> & {
+	tile: Doc<"tiles">;
+};
+
+function MetadataForm({ tile, characters, onSave }: MetadataFormProps) {
+	return (
 		<form
 			className="mt-3 flex flex-col gap-2 rounded-md bg-[#17201d]/72 p-3 text-xs text-[#eef4ea]"
 			onSubmit={(event) => {
 				event.preventDefault();
-				onSave(tile.stableId, label, placeKind, ownerCharacterId || null);
+				const formData = new FormData(event.currentTarget);
+				onSave(
+					tile.stableId,
+					String(formData.get("label") ?? tile.label),
+					String(formData.get("placeKind") ?? tile.placeKind) as PlaceKind,
+					String(formData.get("ownerCharacterId") ?? "") || null,
+				);
 			}}
 			aria-label="Place metadata"
 		>
@@ -64,15 +71,15 @@ export function MetadataPanel({
 				<span className="truncate text-[#cdd8c4]/75">{tile.assetId}</span>
 			</div>
 			<input
-				value={label}
-				onChange={(event) => setLabel(event.target.value)}
+				name="label"
+				defaultValue={tile.label}
 				className="h-9 rounded border border-[#53635b] bg-[#101820] px-2 text-[#eef4ea] outline-none"
 				aria-label="Place label"
 			/>
 			<div className="grid grid-cols-2 gap-2">
 				<select
-					value={placeKind}
-					onChange={(event) => setPlaceKind(event.target.value as PlaceKind)}
+					name="placeKind"
+					defaultValue={tile.placeKind}
 					className="h-9 rounded border border-[#53635b] bg-[#101820] px-2 text-[#eef4ea] outline-none"
 					aria-label="Place kind"
 				>
@@ -83,8 +90,8 @@ export function MetadataPanel({
 					))}
 				</select>
 				<select
-					value={ownerCharacterId}
-					onChange={(event) => setOwnerCharacterId(event.target.value)}
+					name="ownerCharacterId"
+					defaultValue={tile.ownerCharacterId ?? ""}
 					className="h-9 rounded border border-[#53635b] bg-[#101820] px-2 text-[#eef4ea] outline-none"
 					aria-label="Owner character"
 				>

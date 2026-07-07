@@ -6,7 +6,7 @@ import type {
 	TileRotation,
 } from "../types";
 
-export const assetPackLabels: Record<AssetPack, string> = {
+const assetPackLabels: Record<AssetPack, string> = {
 	roads: "Roads",
 	commercial: "Commercial",
 	industrial: "Industrial",
@@ -15,7 +15,7 @@ export const assetPackLabels: Record<AssetPack, string> = {
 	characters: "Characters",
 };
 
-export const assetPackOrder: AssetPack[] = [
+const assetPackOrder: AssetPack[] = [
 	"roads",
 	"commercial",
 	"industrial",
@@ -27,7 +27,7 @@ export const assetPackOrder: AssetPack[] = [
 // sprite-cache.ts). "nature" is excluded because Kenney already ships
 // pre-rendered isometric sprites for it (see natureIsoModules below), so we
 // skip the GLTF/WebGL baking step entirely for that pack.
-export const bakedAssetPacks: AssetPack[] = [
+const bakedAssetPacks: AssetPack[] = [
 	"roads",
 	"commercial",
 	"industrial",

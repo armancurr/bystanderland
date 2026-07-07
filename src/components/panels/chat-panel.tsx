@@ -4,13 +4,13 @@ type ChatPanelProps = {
 	messages: Doc<"chatMessages">[];
 };
 
-export function ChatPanel({ messages }: ChatPanelProps) {
-	const colorByCharacter: Record<string, string> = {
-		aria: "#4cc9f0",
-		milo: "#f6a04d",
-		nora: "#f7d84a",
-	};
+const colorByCharacter: Record<string, string> = {
+	aria: "#4cc9f0",
+	milo: "#f6a04d",
+	nora: "#f7d84a",
+};
 
+export function ChatPanel({ messages }: ChatPanelProps) {
 	return (
 		<section
 			className="flex min-h-0 flex-1 flex-col"

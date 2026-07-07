@@ -194,4 +194,4 @@ export async function ensurePlaceableSprites(
 	);
 }
 
-export { createSpriteStore, TARGET_DIAMOND_PX };
+export { createSpriteStore };

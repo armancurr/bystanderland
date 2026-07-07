@@ -350,19 +350,18 @@ export async function bakeSprite(
  * on boot — use getPlaceableSprite from sprite-cache.ts for on-demand baking
  * with persistent caching instead.
  */
-export async function bakePlaceableSprites(
+async function bakePlaceableSprites(
 	assets: PlaceableAsset[],
 ): Promise<BakedPlaceableSprites> {
 	const sprites = new Map<string, BakedPlaceableSprite>();
 
-	for (const asset of assets) {
-		for (const rotation of ROTATIONS) {
-			sprites.set(
-				placeableSpriteKey(asset.id, rotation),
-				await bakeSprite(asset, rotation),
-			);
-		}
-	}
+	await Promise.all(
+		assets.flatMap((asset) =>
+			ROTATIONS.map(async (rotation) => {
+				sprites.set(placeableSpriteKey(asset.id, rotation), await bakeSprite(asset, rotation));
+			}),
+		),
+	);
 
 	return { sprites, diamondPx: TARGET_DIAMOND_PX };
 }

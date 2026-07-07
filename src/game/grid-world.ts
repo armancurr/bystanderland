@@ -65,7 +65,7 @@ export function getPlacedTileFootprint(
 	);
 }
 
-export function placedTileCells(
+function placedTileCells(
 	tile: PlacedTile,
 	sprites: BakedPlaceableSprites,
 ) {
@@ -75,7 +75,7 @@ export function placedTileCells(
 	);
 }
 
-export function containsCell(
+function containsCell(
 	tile: PlacedTile,
 	sprites: BakedPlaceableSprites,
 	col: number,

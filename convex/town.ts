@@ -100,8 +100,9 @@ async function ensureDefaultWorld(ctx: MutationCtx) {
 		throw new Error("Failed to create default world");
 	}
 
-	for (const seed of characterSeeds) {
-		await ctx.db.insert("characters", {
+	await Promise.all(
+		characterSeeds.flatMap((seed) => [
+			ctx.db.insert("characters", {
 			worldId,
 			characterId: seed.characterId,
 			label: seed.label,
@@ -110,8 +111,8 @@ async function ensureDefaultWorld(ctx: MutationCtx) {
 			activity: "idle",
 			currentTask: null,
 			updatedAt: timestamp,
-		});
-		await ctx.db.insert("places", {
+			}),
+			ctx.db.insert("places", {
 			worldId,
 			tileId: null,
 			stableId: `${seed.characterId}:home`,
@@ -120,27 +121,30 @@ async function ensureDefaultWorld(ctx: MutationCtx) {
 			entryCell: seed.cell,
 			ownerCharacterId: seed.characterId,
 			updatedAt: timestamp,
-		});
-	}
+			}),
+		]),
+	);
 
 	return world;
 }
 
 async function reconcilePlaces(ctx: MutationCtx, worldId: Id<"worlds">) {
 	const timestamp = now();
-	const tiles = await ctx.db
-		.query("tiles")
-		.withIndex("by_worldId", (q) => q.eq("worldId", worldId))
-		.collect();
-	const places = await ctx.db
-		.query("places")
-		.withIndex("by_worldId", (q) => q.eq("worldId", worldId))
-		.collect();
+	const [tiles, places] = await Promise.all([
+		ctx.db
+			.query("tiles")
+			.withIndex("by_worldId", (q) => q.eq("worldId", worldId))
+			.collect(),
+		ctx.db
+			.query("places")
+			.withIndex("by_worldId", (q) => q.eq("worldId", worldId))
+			.collect(),
+	]);
 	const placeByStableId = new Map(
 		places.map((place) => [place.stableId, place]),
 	);
 
-	for (const tile of tiles) {
+	await Promise.all(tiles.map((tile) => {
 		const stableId = `tile:${tile.stableId}`;
 		const existing = placeByStableId.get(stableId);
 		const place = {
@@ -154,32 +158,31 @@ async function reconcilePlaces(ctx: MutationCtx, worldId: Id<"worlds">) {
 			updatedAt: timestamp,
 		};
 		if (existing) {
-			await ctx.db.patch(existing._id, place);
+			return ctx.db.patch(existing._id, place);
 		} else {
-			await ctx.db.insert("places", place);
+			return ctx.db.insert("places", place);
+		}
+	}));
+
+	const homeTilesByOwner = new Map<string, Doc<"tiles">>();
+	for (const tile of tiles) {
+		if (tile.placeKind === "home" && tile.ownerCharacterId !== null) {
+			homeTilesByOwner.set(tile.ownerCharacterId, tile);
 		}
 	}
-
-	const homeTilesByOwner = new Map(
-		tiles
-			.filter(
-				(tile) => tile.placeKind === "home" && tile.ownerCharacterId !== null,
-			)
-			.map((tile) => [tile.ownerCharacterId, tile]),
-	);
 	const characters = await ctx.db
 		.query("characters")
 		.withIndex("by_worldId", (q) => q.eq("worldId", worldId))
 		.collect();
 
-	for (const character of characters) {
+	await Promise.all(characters.map(async (character) => {
 		const homeTile = homeTilesByOwner.get(character.characterId);
 		if (homeTile) {
 			await ctx.db.patch(character._id, {
 				homePlaceStableId: `tile:${homeTile.stableId}`,
 				updatedAt: timestamp,
 			});
-			continue;
+			return;
 		}
 
 		const stableId = `${character.characterId}:home`;
@@ -203,7 +206,7 @@ async function reconcilePlaces(ctx: MutationCtx, worldId: Id<"worlds">) {
 			homePlaceStableId: stableId,
 			updatedAt: timestamp,
 		});
-	}
+	}));
 }
 
 export const ensureWorld = mutation({
@@ -223,16 +226,18 @@ export const importLocalTiles = mutation({
 		}
 
 		const timestamp = now();
-		const homeCandidates = args.tiles.filter(
-			(tile) =>
+		const homeCandidateIndexes = new Map<string, number>();
+		for (const [index, tile] of args.tiles.entries()) {
+			if (
 				tile.assetId.startsWith("suburban:") ||
-				tile.assetId.includes("building"),
-		);
+				tile.assetId.includes("building")
+			) {
+				homeCandidateIndexes.set(tile.stableId, index);
+			}
+		}
 
-		for (const tile of args.tiles) {
-			const owner = homeCandidates.findIndex(
-				(candidate) => candidate.stableId === tile.stableId,
-			);
+		await Promise.all(args.tiles.map((tile) => {
+			const owner = homeCandidateIndexes.get(tile.stableId) ?? -1;
 			const ownerCharacter =
 				owner >= 0 && owner < characterSeeds.length
 					? characterSeeds[owner]
@@ -240,7 +245,7 @@ export const importLocalTiles = mutation({
 			const placeKind =
 				tile.placeKind ??
 				(ownerCharacter ? "home" : kindFromAssetId(tile.assetId));
-			await ctx.db.insert("tiles", {
+			return ctx.db.insert("tiles", {
 				worldId: world._id,
 				stableId: tile.stableId,
 				assetId: tile.assetId,
@@ -257,7 +262,7 @@ export const importLocalTiles = mutation({
 					tile.ownerCharacterId ?? ownerCharacter?.characterId ?? null,
 				updatedAt: timestamp,
 			});
-		}
+		}));
 
 		await ctx.db.patch(world._id, {
 			importedLocalStorage: true,
@@ -372,14 +377,24 @@ export const getTurnContext = query({
 				currentTask: character.currentTask,
 			},
 			places: labelledPlaces,
-			otherCharacters: characters
-				.filter((candidate) => candidate.characterId !== character.characterId)
-				.map((candidate) => ({
+			otherCharacters: characters.reduce<
+				Array<{
+					characterId: string;
+					label: string;
+					cell: { col: number; row: number };
+					distance: number;
+				}>
+			>((others, candidate) => {
+				if (candidate.characterId !== character.characterId) {
+					others.push({
 					characterId: candidate.characterId,
 					label: candidate.label,
 					cell: candidate.cell,
 					distance: distance(character.cell, candidate.cell),
-				})),
+					});
+				}
+				return others;
+			}, []),
 			recentMessages: chatMessages
 				.sort((a, b) => a.createdAt - b.createdAt)
 				.slice(-8)
@@ -387,14 +402,24 @@ export const getTurnContext = query({
 					label: message.label,
 					text: message.text,
 				})),
-			pendingActions: actions
-				.filter((action) => action.status === "pending")
-				.map((pending) => ({
+			pendingActions: actions.reduce<
+				Array<{
+					characterId: string;
+					actionId: Doc<"agentActions">["actionId"];
+					targetPlaceStableId: string | null;
+					reason: string;
+				}>
+			>((pendingActions, pending) => {
+				if (pending.status === "pending") {
+					pendingActions.push({
 					characterId: pending.characterId,
 					actionId: pending.actionId,
 					targetPlaceStableId: pending.targetPlaceStableId,
 					reason: pending.reason,
-				})),
+					});
+				}
+				return pendingActions;
+			}, []),
 		};
 	},
 });
