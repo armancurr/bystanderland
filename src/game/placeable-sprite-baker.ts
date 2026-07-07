@@ -358,7 +358,10 @@ async function bakePlaceableSprites(
 	await Promise.all(
 		assets.flatMap((asset) =>
 			ROTATIONS.map(async (rotation) => {
-				sprites.set(placeableSpriteKey(asset.id, rotation), await bakeSprite(asset, rotation));
+				sprites.set(
+					placeableSpriteKey(asset.id, rotation),
+					await bakeSprite(asset, rotation),
+				);
 			}),
 		),
 	);

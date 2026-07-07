@@ -117,7 +117,10 @@ export function useTownbaseController() {
 		() => convexTiles.map(convexTileToPlacedTile),
 		[convexTiles],
 	);
-	const characters = useMemo(() => state?.characters ?? [], [state?.characters]);
+	const characters = useMemo(
+		() => state?.characters ?? [],
+		[state?.characters],
+	);
 	const places = state?.places ?? [];
 	const mode = state?.world.mode ?? "auto";
 	const isWorldReady = state !== undefined && state !== null;

@@ -103,24 +103,24 @@ async function ensureDefaultWorld(ctx: MutationCtx) {
 	await Promise.all(
 		characterSeeds.flatMap((seed) => [
 			ctx.db.insert("characters", {
-			worldId,
-			characterId: seed.characterId,
-			label: seed.label,
-			cell: seed.cell,
-			homePlaceStableId: `${seed.characterId}:home`,
-			activity: "idle",
-			currentTask: null,
-			updatedAt: timestamp,
+				worldId,
+				characterId: seed.characterId,
+				label: seed.label,
+				cell: seed.cell,
+				homePlaceStableId: `${seed.characterId}:home`,
+				activity: "idle",
+				currentTask: null,
+				updatedAt: timestamp,
 			}),
 			ctx.db.insert("places", {
-			worldId,
-			tileId: null,
-			stableId: `${seed.characterId}:home`,
-			label: `${seed.label} Home`,
-			kind: "fallback",
-			entryCell: seed.cell,
-			ownerCharacterId: seed.characterId,
-			updatedAt: timestamp,
+				worldId,
+				tileId: null,
+				stableId: `${seed.characterId}:home`,
+				label: `${seed.label} Home`,
+				kind: "fallback",
+				entryCell: seed.cell,
+				ownerCharacterId: seed.characterId,
+				updatedAt: timestamp,
 			}),
 		]),
 	);
@@ -144,25 +144,27 @@ async function reconcilePlaces(ctx: MutationCtx, worldId: Id<"worlds">) {
 		places.map((place) => [place.stableId, place]),
 	);
 
-	await Promise.all(tiles.map((tile) => {
-		const stableId = `tile:${tile.stableId}`;
-		const existing = placeByStableId.get(stableId);
-		const place = {
-			worldId,
-			tileId: tile._id,
-			stableId,
-			label: tile.label,
-			kind: placeKindForTile(tile),
-			entryCell: { col: tile.col, row: tile.row },
-			ownerCharacterId: tile.ownerCharacterId,
-			updatedAt: timestamp,
-		};
-		if (existing) {
-			return ctx.db.patch(existing._id, place);
-		} else {
-			return ctx.db.insert("places", place);
-		}
-	}));
+	await Promise.all(
+		tiles.map((tile) => {
+			const stableId = `tile:${tile.stableId}`;
+			const existing = placeByStableId.get(stableId);
+			const place = {
+				worldId,
+				tileId: tile._id,
+				stableId,
+				label: tile.label,
+				kind: placeKindForTile(tile),
+				entryCell: { col: tile.col, row: tile.row },
+				ownerCharacterId: tile.ownerCharacterId,
+				updatedAt: timestamp,
+			};
+			if (existing) {
+				return ctx.db.patch(existing._id, place);
+			} else {
+				return ctx.db.insert("places", place);
+			}
+		}),
+	);
 
 	const homeTilesByOwner = new Map<string, Doc<"tiles">>();
 	for (const tile of tiles) {
@@ -175,38 +177,40 @@ async function reconcilePlaces(ctx: MutationCtx, worldId: Id<"worlds">) {
 		.withIndex("by_worldId", (q) => q.eq("worldId", worldId))
 		.collect();
 
-	await Promise.all(characters.map(async (character) => {
-		const homeTile = homeTilesByOwner.get(character.characterId);
-		if (homeTile) {
+	await Promise.all(
+		characters.map(async (character) => {
+			const homeTile = homeTilesByOwner.get(character.characterId);
+			if (homeTile) {
+				await ctx.db.patch(character._id, {
+					homePlaceStableId: `tile:${homeTile.stableId}`,
+					updatedAt: timestamp,
+				});
+				return;
+			}
+
+			const stableId = `${character.characterId}:home`;
+			const fallback = placeByStableId.get(stableId);
+			const home = {
+				worldId,
+				tileId: null,
+				stableId,
+				label: `${character.label} Home`,
+				kind: "fallback" as const,
+				entryCell: character.cell,
+				ownerCharacterId: character.characterId,
+				updatedAt: timestamp,
+			};
+			if (fallback) {
+				await ctx.db.patch(fallback._id, home);
+			} else {
+				await ctx.db.insert("places", home);
+			}
 			await ctx.db.patch(character._id, {
-				homePlaceStableId: `tile:${homeTile.stableId}`,
+				homePlaceStableId: stableId,
 				updatedAt: timestamp,
 			});
-			return;
-		}
-
-		const stableId = `${character.characterId}:home`;
-		const fallback = placeByStableId.get(stableId);
-		const home = {
-			worldId,
-			tileId: null,
-			stableId,
-			label: `${character.label} Home`,
-			kind: "fallback" as const,
-			entryCell: character.cell,
-			ownerCharacterId: character.characterId,
-			updatedAt: timestamp,
-		};
-		if (fallback) {
-			await ctx.db.patch(fallback._id, home);
-		} else {
-			await ctx.db.insert("places", home);
-		}
-		await ctx.db.patch(character._id, {
-			homePlaceStableId: stableId,
-			updatedAt: timestamp,
-		});
-	}));
+		}),
+	);
 }
 
 export const ensureWorld = mutation({
@@ -236,33 +240,35 @@ export const importLocalTiles = mutation({
 			}
 		}
 
-		await Promise.all(args.tiles.map((tile) => {
-			const owner = homeCandidateIndexes.get(tile.stableId) ?? -1;
-			const ownerCharacter =
-				owner >= 0 && owner < characterSeeds.length
-					? characterSeeds[owner]
-					: null;
-			const placeKind =
-				tile.placeKind ??
-				(ownerCharacter ? "home" : kindFromAssetId(tile.assetId));
-			return ctx.db.insert("tiles", {
-				worldId: world._id,
-				stableId: tile.stableId,
-				assetId: tile.assetId,
-				col: tile.col,
-				row: tile.row,
-				rotation: tile.rotation,
-				label:
-					tile.label ??
-					(ownerCharacter
-						? `${ownerCharacter.label} Home`
-						: labelFromAssetId(tile.assetId)),
-				placeKind,
-				ownerCharacterId:
-					tile.ownerCharacterId ?? ownerCharacter?.characterId ?? null,
-				updatedAt: timestamp,
-			});
-		}));
+		await Promise.all(
+			args.tiles.map((tile) => {
+				const owner = homeCandidateIndexes.get(tile.stableId) ?? -1;
+				const ownerCharacter =
+					owner >= 0 && owner < characterSeeds.length
+						? characterSeeds[owner]
+						: null;
+				const placeKind =
+					tile.placeKind ??
+					(ownerCharacter ? "home" : kindFromAssetId(tile.assetId));
+				return ctx.db.insert("tiles", {
+					worldId: world._id,
+					stableId: tile.stableId,
+					assetId: tile.assetId,
+					col: tile.col,
+					row: tile.row,
+					rotation: tile.rotation,
+					label:
+						tile.label ??
+						(ownerCharacter
+							? `${ownerCharacter.label} Home`
+							: labelFromAssetId(tile.assetId)),
+					placeKind,
+					ownerCharacterId:
+						tile.ownerCharacterId ?? ownerCharacter?.characterId ?? null,
+					updatedAt: timestamp,
+				});
+			}),
+		);
 
 		await ctx.db.patch(world._id, {
 			importedLocalStorage: true,
@@ -387,10 +393,10 @@ export const getTurnContext = query({
 			>((others, candidate) => {
 				if (candidate.characterId !== character.characterId) {
 					others.push({
-					characterId: candidate.characterId,
-					label: candidate.label,
-					cell: candidate.cell,
-					distance: distance(character.cell, candidate.cell),
+						characterId: candidate.characterId,
+						label: candidate.label,
+						cell: candidate.cell,
+						distance: distance(character.cell, candidate.cell),
 					});
 				}
 				return others;
@@ -412,10 +418,10 @@ export const getTurnContext = query({
 			>((pendingActions, pending) => {
 				if (pending.status === "pending") {
 					pendingActions.push({
-					characterId: pending.characterId,
-					actionId: pending.actionId,
-					targetPlaceStableId: pending.targetPlaceStableId,
-					reason: pending.reason,
+						characterId: pending.characterId,
+						actionId: pending.actionId,
+						targetPlaceStableId: pending.targetPlaceStableId,
+						reason: pending.reason,
 					});
 				}
 				return pendingActions;

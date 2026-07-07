@@ -65,10 +65,7 @@ export function getPlacedTileFootprint(
 	);
 }
 
-function placedTileCells(
-	tile: PlacedTile,
-	sprites: BakedPlaceableSprites,
-) {
+function placedTileCells(tile: PlacedTile, sprites: BakedPlaceableSprites) {
 	return footprintCells(
 		{ col: tile.col, row: tile.row },
 		getPlacedTileFootprint(tile, sprites),
