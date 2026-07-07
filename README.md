@@ -36,7 +36,7 @@ docker run --rm -p 8080:80 townbase
 
 ## Vercel
 
-This repo includes `Dockerfile.vercel` for container deployments on Vercel.
+Vercel auto-detects `Dockerfile.vercel` at the repo root and deploys the app as a container image.
 
 Deploy from the CLI:
 
@@ -45,6 +45,8 @@ vercel deploy
 ```
 
 Or connect the Git repo in Vercel and push to trigger a new deployment.
+
+The container serves the Vite `dist/` output over HTTP on `$PORT`.
 
 ## CLI
 

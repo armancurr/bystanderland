@@ -17,6 +17,7 @@ RUN bun run build
 FROM nginx:1.27-alpine AS runtime
 
 RUN apk add --no-cache gettext \
+  && mkdir -p /etc/nginx/templates \
   && printf '%s\n' \
   'server {' \
   '  listen       ${PORT};' \
@@ -30,4 +31,4 @@ RUN apk add --no-cache gettext \
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-CMD ["sh", "-c", "envsubst '$PORT' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]
+CMD ["sh", "-c", ": \"${PORT:=80}\" && envsubst '$PORT' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]
